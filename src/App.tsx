@@ -1,0 +1,884 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  Flame, 
+  Wind, 
+  Map as MapIcon, 
+  ShieldAlert, 
+  Camera, 
+  LayoutDashboard, 
+  User as UserIcon,
+  Bell,
+  TrendingUp,
+  MapPin,
+  CheckCircle2,
+  AlertTriangle,
+  X,
+  Loader2,
+  Navigation
+} from 'lucide-react';
+import { io, Socket } from 'socket.io-client';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  AreaChart,
+  Area
+} from 'recharts';
+import { useDropzone } from 'react-dropzone';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
+
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+// --- Delhi Coordinates ---
+const DELHI_CENTER: [number, number] = [28.6139, 77.2090];
+
+// --- Components ---
+
+const Navbar = ({ activeTab, setActiveTab, role }: { activeTab: string, setActiveTab: (t: string) => void, role: string }) => (
+  <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-zinc-200 px-6 py-3 flex justify-around items-center z-50 md:top-0 md:bottom-auto md:flex-col md:w-20 md:h-full md:border-r md:border-t-0">
+    <div className="hidden md:flex mb-8 items-center justify-center">
+      <div className="w-10 h-10 bg-emerald-600 rounded-xl flex items-center justify-center text-white font-bold">S</div>
+    </div>
+    <NavItem icon={<MapIcon size={24} />} label="Map" active={activeTab === 'map'} onClick={() => setActiveTab('map')} />
+    {role === 'citizen' ? (
+      <NavItem icon={<Camera size={24} />} label="Report" active={activeTab === 'report'} onClick={() => setActiveTab('report')} />
+    ) : (
+      <NavItem icon={<LayoutDashboard size={24} />} label="Admin" active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} />
+    )}
+    <NavItem icon={<TrendingUp size={24} />} label="Stats" active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} />
+    <NavItem icon={<UserIcon size={24} />} label="Profile" active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} />
+  </nav>
+);
+
+const NavItem = ({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) => (
+  <button 
+    onClick={onClick}
+    className={cn(
+      "flex flex-col items-center gap-1 transition-colors",
+      active ? "text-emerald-600" : "text-zinc-400 hover:text-zinc-600"
+    )}
+  >
+    {icon}
+    <span className="text-[10px] font-medium uppercase tracking-wider">{label}</span>
+  </button>
+);
+
+const HeatmapLayer = ({ incidents }: { incidents: any[] }) => {
+  return (
+    <>
+      {incidents.map((inc) => {
+        // Calculate color based on heat_score (0-100)
+        const heat = inc.heat_score || 50;
+        const color = heat > 80 ? '#ef4444' : heat > 50 ? '#f97316' : '#facc15';
+        
+        const lat = inc.location_lat ?? inc.lat;
+        const lng = inc.location_lng ?? inc.lng;
+
+        if (lat === undefined || lng === undefined) return null;
+
+        // Heatmap effect: multiple overlapping circles with decreasing opacity
+        return (
+          <React.Fragment key={inc.id}>
+            {/* Outer Glow */}
+            <CircleMarker
+              center={[lat, lng]}
+              radius={25 + (heat / 4)}
+              pathOptions={{
+                fillColor: color,
+                fillOpacity: 0.1,
+                color: 'transparent',
+                weight: 0
+              }}
+            />
+            {/* Middle Layer */}
+            <CircleMarker
+              center={[lat, lng]}
+              radius={15 + (heat / 5)}
+              pathOptions={{
+                fillColor: color,
+                fillOpacity: 0.3,
+                color: 'transparent',
+                weight: 0
+              }}
+            />
+            {/* Core */}
+            <CircleMarker
+              center={[lat, lng]}
+              radius={8 + (heat / 10)}
+              pathOptions={{
+                fillColor: color,
+                fillOpacity: 0.7,
+                color: 'white',
+                weight: 1
+              }}
+            >
+              <Popup>
+                <div className="p-2 space-y-1">
+                  <p className="font-bold text-sm">Fire Detected</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] uppercase tracking-widest text-zinc-400">Heat Score</span>
+                    <span className="font-bold text-orange-600">{heat}</span>
+                  </div>
+                  <p className="text-[10px] text-zinc-400">Source: {inc.source || 'Citizen'}</p>
+                  <p className="text-[10px] text-zinc-400">{new Date(inc.timestamp).toLocaleString()}</p>
+                </div>
+              </Popup>
+            </CircleMarker>
+          </React.Fragment>
+        );
+      })}
+    </>
+  );
+};
+
+const MapView = ({ incidents, onMapClick, timeframe, setTimeframe }: { 
+  incidents: any[], 
+  onMapClick?: (lat: number, lng: number) => void,
+  timeframe?: 'live' | 'previous_night',
+  setTimeframe?: (t: 'live' | 'previous_night') => void
+}) => {
+  const MapEvents = () => {
+    useMapEvents({
+      click(e) {
+        if (onMapClick) onMapClick(e.latlng.lat, e.latlng.lng);
+      },
+    });
+    return null;
+  };
+
+  return (
+    <div className="relative w-full h-full bg-zinc-100 overflow-hidden rounded-3xl border border-zinc-200 shadow-inner z-0">
+      <MapContainer 
+        center={DELHI_CENTER} 
+        zoom={11} 
+        style={{ height: '100%', width: '100%' }}
+        zoomControl={false}
+      >
+        <TileLayer
+          url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+        />
+        <HeatmapLayer incidents={incidents} />
+        <MapEvents />
+      </MapContainer>
+
+      <div className="absolute top-6 left-6 right-6 flex flex-col gap-4 pointer-events-none z-[1000]">
+        <div className="bg-white/90 backdrop-blur-md p-4 rounded-2xl shadow-xl border border-white/20 pointer-events-auto max-w-xs space-y-3">
+          <div className="flex items-center gap-3">
+            <div className={cn(
+              "w-3 h-3 rounded-full animate-pulse",
+              timeframe === 'live' ? "bg-emerald-500" : "bg-blue-500"
+            )} />
+            <span className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+              {timeframe === 'live' ? 'Live Heatmap: Delhi' : 'Historical: Previous Night'}
+            </span>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <span className="text-4xl font-light tracking-tighter">{incidents.length}</span>
+            <span className="text-sm font-medium text-orange-500">Hotspots</span>
+          </div>
+          
+          {setTimeframe && (
+            <div className="flex bg-zinc-100 p-1 rounded-xl gap-1">
+              <button 
+                onClick={() => setTimeframe('live')}
+                className={cn(
+                  "flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all",
+                  timeframe === 'live' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-600"
+                )}
+              >
+                LIVE
+              </button>
+              <button 
+                onClick={() => setTimeframe('previous_night')}
+                className={cn(
+                  "flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all",
+                  timeframe === 'previous_night' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-600"
+                )}
+              >
+                PREV NIGHT
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      
+      <div className="absolute bottom-24 left-6 bg-white/90 backdrop-blur-md p-3 rounded-xl shadow-lg border border-white/20 z-[1000] text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+        {timeframe === 'live' ? 'Click map to report incident' : 'Viewing historical data for MCD action'}
+      </div>
+    </div>
+  );
+};
+
+const ReportView = ({ onReport, initialCoords }: { onReport: (data: any) => void, initialCoords?: { lat: number, lng: number } }) => {
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [result, setResult] = useState<any>(null);
+
+  const onDrop = (acceptedFiles: File[]) => {
+    const f = acceptedFiles[0];
+    setFile(f);
+    const reader = new FileReader();
+    reader.onload = () => setPreview(reader.result as string);
+    reader.readAsDataURL(f);
+  };
+
+  const { getRootProps, getInputProps } = useDropzone({ 
+    onDrop, 
+    accept: { 'image/*': [] },
+    multiple: false 
+  });
+
+  const handleSubmit = async () => {
+    if (!preview) return;
+    setIsVerifying(true);
+    try {
+      const res = await fetch('/api/reports/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image: preview,
+          lat: initialCoords?.lat || 28.6139 + (Math.random() - 0.5) * 0.1,
+          lng: initialCoords?.lng || 77.2090 + (Math.random() - 0.5) * 0.1,
+          userId: 'user_123'
+        })
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Unknown server error' }));
+        throw new Error(errorData.error || 'Failed to verify report');
+      }
+
+      const data = await res.json();
+      setResult(data);
+    } catch (err) {
+      console.error(err);
+      setResult({ 
+        detected: false, 
+        description: err instanceof Error ? err.message : "An unexpected error occurred. Please try again." 
+      });
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  return (
+    <div className="max-w-md mx-auto p-6 space-y-8">
+      <div className="space-y-2">
+        <h2 className="text-3xl font-light tracking-tight">Report Incident</h2>
+        <p className="text-zinc-500 text-sm">Help us identify open fires and garbage burning in your area.</p>
+        {initialCoords && (
+          <div className="flex items-center gap-2 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full w-fit">
+            <MapPin size={10} />
+            LOCATION TAGGED: {initialCoords.lat.toFixed(4)}, {initialCoords.lng.toFixed(4)}
+          </div>
+        )}
+      </div>
+
+      {!result ? (
+        <div className="space-y-6">
+          <div 
+            {...getRootProps()} 
+            className={cn(
+              "aspect-square rounded-3xl border-2 border-dashed flex flex-col items-center justify-center transition-all cursor-pointer overflow-hidden",
+              preview ? "border-emerald-500 bg-emerald-50/50" : "border-zinc-200 hover:border-zinc-300 bg-zinc-50"
+            )}
+          >
+            <input {...getInputProps()} />
+            {preview ? (
+              <img src={preview} alt="Preview" className="w-full h-full object-cover" />
+            ) : (
+              <div className="text-center p-8 space-y-4">
+                <div className="w-16 h-16 bg-white rounded-2xl shadow-sm flex items-center justify-center mx-auto">
+                  <Camera className="text-zinc-400" size={32} />
+                </div>
+                <p className="text-sm font-medium text-zinc-600">Tap to take photo or drag & drop</p>
+              </div>
+            )}
+          </div>
+
+          <button
+            disabled={!file || isVerifying}
+            onClick={handleSubmit}
+            className="w-full py-4 bg-zinc-900 text-white rounded-2xl font-semibold shadow-xl shadow-zinc-200 disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
+          >
+            {isVerifying ? (
+              <>
+                <Loader2 className="animate-spin" size={20} />
+                AI Verifying...
+              </>
+            ) : (
+              'Submit Report'
+            )}
+          </button>
+        </div>
+      ) : (
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white p-8 rounded-3xl border border-zinc-100 shadow-xl space-y-6 text-center"
+        >
+          {result.detected ? (
+            <>
+              <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto">
+                <CheckCircle2 size={40} />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-2xl font-semibold">Verified!</h3>
+                <p className="text-zinc-500">{result.description}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-4 pt-4">
+                <div className="bg-zinc-50 p-4 rounded-2xl">
+                  <span className="text-[10px] uppercase tracking-widest text-zinc-400 block mb-1">Intensity</span>
+                  <span className="font-bold text-orange-600 uppercase">{result.intensity}</span>
+                </div>
+                <div className="bg-zinc-50 p-4 rounded-2xl">
+                  <span className="text-[10px] uppercase tracking-widest text-zinc-400 block mb-1">Confidence</span>
+                  <span className="font-bold text-emerald-600">{Math.round(result.confidence * 100)}%</span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="w-20 h-20 bg-zinc-100 text-zinc-400 rounded-full flex items-center justify-center mx-auto">
+                <X size={40} />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-2xl font-semibold">No Fire Detected</h3>
+                <p className="text-zinc-500">Our AI couldn't find any pollution sources in this image.</p>
+              </div>
+            </>
+          )}
+          <button 
+            onClick={() => { 
+              if (result.detected) onReport(result);
+              setResult(null); 
+              setFile(null); 
+              setPreview(null); 
+            }}
+            className="w-full py-4 bg-zinc-100 text-zinc-900 rounded-2xl font-semibold"
+          >
+            Done
+          </button>
+        </motion.div>
+      )}
+    </div>
+  );
+};
+
+const StatsView = () => {
+  const [predictions, setPredictions] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetch('/api/predictive-model')
+      .then(res => {
+        if (!res.ok) throw new Error('Network response was not ok');
+        return res.json();
+      })
+      .then(data => setPredictions(data))
+      .catch(err => console.error('Error fetching predictions:', err));
+  }, []);
+
+  const data = [
+    { name: 'Mon', fires: 12, aqi: 140 },
+    { name: 'Tue', fires: 19, aqi: 165 },
+    { name: 'Wed', fires: 15, aqi: 155 },
+    { name: 'Thu', fires: 22, aqi: 190 },
+    { name: 'Fri', fires: 30, aqi: 210 },
+    { name: 'Sat', fires: 25, aqi: 180 },
+    { name: 'Sun', fires: 18, aqi: 150 },
+  ];
+
+  return (
+    <div className="p-6 space-y-8 pb-24 md:pb-6">
+      <div className="space-y-2">
+        <h2 className="text-3xl font-light tracking-tight">Pollution Analytics</h2>
+        <p className="text-zinc-500 text-sm">Weekly trends of fire incidents and air quality.</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* ... existing charts ... */}
+        <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm space-y-4">
+          <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Fire Incidents</h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data}>
+                <defs>
+                  <linearGradient id="colorFires" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#f97316" stopOpacity={0.1}/>
+                    <stop offset="95%" stopColor="#f97316" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#a1a1aa' }} />
+                <YAxis hide />
+                <Tooltip 
+                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                />
+                <Area type="monotone" dataKey="fires" stroke="#f97316" fillOpacity={1} fill="url(#colorFires)" strokeWidth={3} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm space-y-4">
+          <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">AQI Trend</h3>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f4f4f5" />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#a1a1aa' }} />
+                <YAxis hide />
+                <Tooltip 
+                  contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                />
+                <Line type="monotone" dataKey="aqi" stroke="#10b981" strokeWidth={3} dot={{ r: 4, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">AI Pollution Predictions (Next 3h)</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {predictions.map((pred, idx) => (
+            <div key={idx} className="bg-white p-5 rounded-3xl border border-zinc-100 shadow-sm space-y-3">
+              <div className="flex items-center justify-between">
+                <div className={cn(
+                  "px-2 py-1 rounded text-[10px] font-bold uppercase",
+                  pred.probability > 0.7 ? "bg-red-100 text-red-600" : "bg-orange-100 text-orange-600"
+                )}>
+                  {pred.probability > 0.7 ? 'High Risk' : 'Moderate Risk'}
+                </div>
+                <span className="text-xl font-bold">{Math.round(pred.probability * 100)}%</span>
+              </div>
+              <p className="text-xs text-zinc-600 font-medium">{pred.reason}</p>
+              <div className="flex items-center gap-2 text-[10px] text-zinc-400">
+                <MapPin size={10} />
+                <span>{pred.lat.toFixed(3)}, {pred.lng.toFixed(3)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-zinc-900 text-white p-8 rounded-3xl space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="space-y-1">
+            <h3 className="text-xl font-semibold">Community Impact</h3>
+            <p className="text-zinc-400 text-sm">Your reports helped reduce pollution by 12% this month.</p>
+          </div>
+          <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center">
+            <TrendingUp className="text-emerald-400" />
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          <div className="space-y-1">
+            <span className="text-2xl font-bold">1,240</span>
+            <span className="text-[10px] uppercase tracking-widest text-zinc-500 block">Reports</span>
+          </div>
+          <div className="space-y-1">
+            <span className="text-2xl font-bold">842</span>
+            <span className="text-[10px] uppercase tracking-widest text-zinc-500 block">Resolved</span>
+          </div>
+          <div className="space-y-1">
+            <span className="text-2xl font-bold">4.2t</span>
+            <span className="text-[10px] uppercase tracking-widest text-zinc-500 block">CO2 Saved</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AdminView = ({ incidents }: { incidents: any[] }) => {
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState(0);
+
+  const startScan = async () => {
+    setIsScanning(true);
+    setScanProgress(0);
+    const interval = setInterval(() => {
+      setScanProgress(prev => {
+        if (prev >= 100) {
+          clearInterval(interval);
+          setIsScanning(false);
+          return 100;
+        }
+        return prev + 5;
+      });
+    }, 100);
+
+    // Simulate multiple camera detections
+    for (let i = 0; i < 3; i++) {
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 1000));
+      await fetch('/api/simulate/camera', { method: 'POST' }).catch(err => console.error('Error simulating camera:', err));
+    }
+  };
+
+  return (
+    <div className="p-6 space-y-8 pb-24 md:pb-6">
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h2 className="text-3xl font-light tracking-tight">Delhi CCTV Network</h2>
+          <p className="text-zinc-500 text-sm">Monitoring 1,200+ live camera feeds across the capital.</p>
+        </div>
+        <div className="flex gap-3">
+          <button 
+            onClick={async () => {
+              try {
+                const res = await fetch('/api/simulate/nightly-cv', { method: 'POST' });
+                if (!res.ok) throw new Error('Failed to run nightly CV');
+                window.location.reload();
+              } catch (err) {
+                console.error(err);
+                alert('Failed to run nightly CV analysis');
+              }
+            }}
+            className="px-4 py-3 bg-blue-600 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg hover:bg-blue-700 transition-colors"
+          >
+            <Camera size={18} />
+            Run Nightly CV Analysis
+          </button>
+          <button 
+            onClick={async () => {
+              try {
+                const res = await fetch('/api/simulate/seed', { method: 'POST' });
+                if (!res.ok) throw new Error('Failed to seed data');
+                window.location.reload();
+              } catch (err) {
+                console.error(err);
+                alert('Failed to seed historical data');
+              }
+            }}
+            className="px-4 py-3 bg-zinc-900 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg"
+          >
+            <TrendingUp size={18} />
+            Seed Historical Data
+          </button>
+          <button 
+            onClick={startScan}
+            disabled={isScanning}
+            className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg shadow-emerald-100 disabled:opacity-50"
+          >
+            {isScanning ? <Loader2 className="animate-spin" size={18} /> : <Camera size={18} />}
+            {isScanning ? 'Scanning Feeds...' : 'Scan Network'}
+          </button>
+          <button className="p-3 bg-zinc-100 rounded-2xl relative">
+            <Bell size={24} className="text-zinc-600" />
+            <span className="absolute top-2 right-2 w-2 h-2 bg-orange-500 rounded-full border-2 border-white" />
+          </button>
+        </div>
+      </div>
+
+      {isScanning && (
+        <div className="w-full h-2 bg-zinc-100 rounded-full overflow-hidden">
+          <motion.div 
+            className="h-full bg-emerald-500"
+            initial={{ width: 0 }}
+            animate={{ width: `${scanProgress}%` }}
+          />
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="lg:col-span-2 space-y-6">
+          <div className="h-[500px]">
+            <MapView incidents={incidents} />
+          </div>
+          
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Live Camera Detections</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {incidents.filter(i => i.source === 'camera').slice(0, 4).map((inc) => (
+                <div key={inc.id} className="bg-white p-4 rounded-2xl border border-zinc-100 shadow-sm space-y-3">
+                  <div className="aspect-video bg-zinc-100 rounded-xl overflow-hidden relative">
+                    <img 
+                      src={`https://picsum.photos/seed/${inc.id}/400/225`} 
+                      alt="CCTV Feed" 
+                      className="w-full h-full object-cover opacity-80"
+                      referrerPolicy="no-referrer"
+                    />
+                    <div className="absolute top-2 left-2 bg-red-600 text-white text-[10px] font-bold px-2 py-1 rounded flex items-center gap-1">
+                      <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                      LIVE: CAM_{inc.id.substring(0, 4).toUpperCase()}
+                    </div>
+                    <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur-md text-white text-[10px] font-mono px-2 py-1 rounded">
+                      {new Date(inc.timestamp).toLocaleTimeString()}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <p className="text-xs font-bold text-zinc-900">Heat Score: {inc.heat_score}</p>
+                      <p className="text-[10px] text-zinc-400">Lat: {inc.location_lat?.toFixed(4)}, Lng: {inc.location_lng?.toFixed(4)}</p>
+                    </div>
+                    <div className={cn(
+                      "px-2 py-1 rounded text-[10px] font-bold uppercase",
+                      inc.heat_score > 70 ? "bg-red-100 text-red-600" : "bg-orange-100 text-orange-600"
+                    )}>
+                      {inc.heat_score > 70 ? 'CRITICAL' : 'WARNING'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="bg-zinc-900 text-white p-6 rounded-3xl space-y-6">
+            <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-500">System Health</h3>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-zinc-400">AI Model Status</span>
+                <span className="text-xs text-emerald-400 font-bold">OPTIMAL</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-zinc-400">Camera Uptime</span>
+                <span className="text-xs text-emerald-400 font-bold">98.4%</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-zinc-400">Processing Latency</span>
+                <span className="text-xs text-zinc-200 font-bold">140ms</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm space-y-4">
+            <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">API Integration</h3>
+            <div className="space-y-4">
+              <p className="text-xs text-zinc-500 leading-relaxed">
+                Feed external CCTV or sensor data into the SAANSSAFE AI pipeline using our REST API.
+              </p>
+              <div className="bg-zinc-900 p-4 rounded-2xl overflow-x-auto">
+                <code className="text-[10px] text-emerald-400 font-mono whitespace-pre">
+{`# Report a verified fire incident
+curl -X POST ${window.location.origin}/api/simulate/camera \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "lat": 28.6139,
+    "lng": 77.2090,
+    "heat_score": 85
+  }'`}
+                </code>
+              </div>
+              <div className="flex items-center gap-2 text-[10px] text-zinc-400 italic">
+                <ShieldAlert size={12} />
+                <span>Requires Authority API Key in production</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm space-y-4">
+            <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">MCD Nightly Summary</h3>
+            <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100 space-y-3">
+              <div className="flex items-center gap-2 text-blue-700">
+                <TrendingUp size={16} />
+                <span className="text-xs font-bold uppercase tracking-wider">Previous Night Analysis</span>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <p className="text-[10px] text-blue-600 font-medium">Total Detections</p>
+                  <p className="text-2xl font-bold text-blue-900">42</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-[10px] text-blue-600 font-medium">Critical Zones</p>
+                  <p className="text-2xl font-bold text-blue-900">08</p>
+                </div>
+              </div>
+              <p className="text-[10px] text-blue-500 leading-relaxed">
+                Most incidents occurred between 1 AM - 3 AM in North-West Delhi. Recommended deployment: Zone 4 & 7.
+              </p>
+              <button className="w-full py-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest">
+                Download MCD Report
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm space-y-4">
+            <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Hotspot Analysis</h3>
+            <div className="space-y-4">
+              {incidents.slice(0, 3).map((inc, idx) => (
+                <div key={idx} className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-zinc-50 rounded-lg flex items-center justify-center text-xs font-bold text-zinc-400">
+                    0{idx + 1}
+                  </div>
+                  <div className="flex-1 space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-medium">Zone {idx + 1}</span>
+                      <span className="text-orange-600 font-bold">{inc.heat_score}% Heat</span>
+                    </div>
+                    <div className="h-1 bg-zinc-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-orange-500" style={{ width: `${inc.heat_score}%` }} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('map');
+  const [role, setRole] = useState<'citizen' | 'authority'>('citizen');
+  const [incidents, setIncidents] = useState<any[]>([]);
+  const [timeframe, setTimeframe] = useState<'live' | 'previous_night'>('live');
+  const [selectedCoords, setSelectedCoords] = useState<{ lat: number, lng: number } | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+
+  useEffect(() => {
+    // Fetch incidents based on timeframe
+    fetch(`/api/incidents?timeframe=${timeframe}`)
+      .then(res => {
+        if (!res.ok) throw new Error('Network response was not ok');
+        return res.json();
+      })
+      .then(data => setIncidents(data))
+      .catch(err => console.error('Error fetching incidents:', err));
+
+    // Socket setup
+    socketRef.current = io();
+    socketRef.current.on('new_incident', (incident) => {
+      if (timeframe === 'live') {
+        setIncidents(prev => [incident, ...prev]);
+      }
+    });
+
+    return () => {
+      socketRef.current?.disconnect();
+    };
+  }, [role, timeframe]);
+
+  const handleMapClick = (lat: number, lng: number) => {
+    if (role === 'citizen' && timeframe === 'live') {
+      setSelectedCoords({ lat, lng });
+      setActiveTab('report');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-50 text-zinc-900 font-sans selection:bg-emerald-100 selection:text-emerald-900">
+      <Navbar activeTab={activeTab} setActiveTab={setActiveTab} role={role} />
+      
+      <main className="md:ml-20 h-screen overflow-y-auto">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={activeTab}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="h-full"
+          >
+            {activeTab === 'map' && (
+              <div className="h-full p-4 md:p-8">
+                <MapView 
+                  incidents={incidents} 
+                  onMapClick={handleMapClick} 
+                  timeframe={timeframe}
+                  setTimeframe={setTimeframe}
+                />
+              </div>
+            )}
+            {activeTab === 'report' && (
+              <ReportView 
+                onReport={() => { 
+                  setTimeframe('live');
+                  setActiveTab('map'); 
+                  setSelectedCoords(null); 
+                }} 
+                initialCoords={selectedCoords || undefined} 
+              />
+            )}
+            {activeTab === 'stats' && <StatsView />}
+            {activeTab === 'admin' && <AdminView incidents={incidents} />}
+            {activeTab === 'profile' && (
+              <div className="max-w-md mx-auto p-8 space-y-8">
+                <div className="flex flex-col items-center gap-4">
+                  <div className="w-24 h-24 bg-zinc-200 rounded-3xl flex items-center justify-center">
+                    <UserIcon size={48} className="text-zinc-400" />
+                  </div>
+                  <div className="text-center">
+                    <h2 className="text-2xl font-bold">Harshit Sharma</h2>
+                    <p className="text-zinc-500 text-sm">Citizen Responder • Level 4</p>
+                  </div>
+                </div>
+                
+                <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm space-y-6">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-zinc-500">Your Impact Points</span>
+                    <span className="text-2xl font-bold text-emerald-600">1,450</span>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-zinc-400">Next Rank: Guardian</span>
+                      <span>85%</span>
+                    </div>
+                    <div className="h-2 bg-zinc-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-emerald-500 w-[85%]" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Settings</h3>
+                  <div className="space-y-2">
+                    <button 
+                      onClick={() => setRole(role === 'citizen' ? 'authority' : 'citizen')}
+                      className="w-full p-4 bg-white rounded-2xl border border-zinc-100 flex items-center justify-between hover:bg-zinc-50 transition-colors"
+                    >
+                      <span className="font-medium">Switch to {role === 'citizen' ? 'Authority' : 'Citizen'} View</span>
+                      <ShieldAlert size={20} className="text-zinc-400" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
+      </main>
+
+      {/* Global Alert Overlay */}
+      <AnimatePresence>
+        {incidents.length > 0 && activeTab !== 'admin' && (
+          <motion.div 
+            initial={{ opacity: 0, x: 100 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 100 }}
+            className="fixed top-6 right-6 z-[60] max-w-xs"
+          >
+            <div className="bg-orange-600 text-white p-4 rounded-2xl shadow-2xl flex items-start gap-3">
+              <AlertTriangle className="shrink-0" size={20} />
+              <div className="space-y-1">
+                <p className="text-xs font-bold uppercase tracking-widest opacity-80">Emergency Alert</p>
+                <p className="text-sm font-medium">New fire detected within 2km of your location.</p>
+              </div>
+              <button 
+                onClick={() => setIncidents(prev => prev.slice(1))}
+                className="text-white/60 hover:text-white"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
