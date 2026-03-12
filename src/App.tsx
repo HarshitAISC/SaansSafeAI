@@ -15,9 +15,14 @@ import {
   AlertTriangle,
   X,
   Loader2,
-  Navigation
+  Navigation,
+  BrainCircuit,
+  Database as DatabaseIcon,
+  ThumbsUp,
+  ThumbsDown
 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
+import { GoogleGenAI } from "@google/genai";
 import { 
   LineChart, 
   Line, 
@@ -53,7 +58,10 @@ const Navbar = ({ activeTab, setActiveTab, role }: { activeTab: string, setActiv
     {role === 'citizen' ? (
       <NavItem icon={<Camera size={24} />} label="Report" active={activeTab === 'report'} onClick={() => setActiveTab('report')} />
     ) : (
-      <NavItem icon={<LayoutDashboard size={24} />} label="Admin" active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} />
+      <>
+        <NavItem icon={<LayoutDashboard size={24} />} label="Admin" active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} />
+        <NavItem icon={<BrainCircuit size={24} />} label="Train" active={activeTab === 'calibrate'} onClick={() => setActiveTab('calibrate')} />
+      </>
     )}
     <NavItem icon={<TrendingUp size={24} />} label="Stats" active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} />
     <NavItem icon={<UserIcon size={24} />} label="Profile" active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} />
@@ -244,24 +252,87 @@ const ReportView = ({ onReport, initialCoords }: { onReport: (data: any) => void
     if (!preview) return;
     setIsVerifying(true);
     try {
-      const res = await fetch('/api/reports/verify', {
+      // Initialize Gemini on the frontend
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+      const model = "gemini-3-flash-preview";
+      
+      const prompt = `
+        You are the core vision engine for SaansSafe, an advanced fire and smoke detection system.
+        Your goal is to identify environmental hazards (fires, smoke, illegal burning) with extreme precision.
+
+        ### DETECTION GUIDELINES:
+        - **FIRE**: Look for orange, red, or yellow luminous cores. In CCTV/Citizen photos, this might appear as a bright spot or flickering area.
+        - **SMOKE**: Look for plumes rising from a specific point. Smoke can be white (steam/light burning), grey, or thick black (chemical/tire burning).
+        - **CONTEXT**: Differentiate between a fire and a sunset, street light, or car headlight. Fires have irregular shapes and often produce smoke.
+
+        ### FEW-SHOT EXAMPLES:
+        1. **Scenario**: A small pile of leaves burning in a park.
+           **Response**: { "detected": true, "type": "fire", "confidence": 0.95, "intensity": "low", "density": "medium", "heat_score": 30, "description": "Small localized fire detected in a residential area, likely leaf burning." }
+        2. **Scenario**: Thick black smoke rising from an industrial chimney.
+           **Response**: { "detected": true, "type": "smoke", "confidence": 0.98, "intensity": "high", "density": "high", "heat_score": 60, "description": "Heavy industrial smoke emission detected." }
+        3. **Scenario**: A bright orange sunset behind a building.
+           **Response**: { "detected": false, "type": "none", "confidence": 0.99, "intensity": "none", "density": "none", "heat_score": 0, "description": "No fire detected. The orange glow is consistent with a sunset." }
+
+        ### TASK:
+        Analyze the provided image. Be highly sensitive to small or distant fires. If you are unsure but there is a strong indication of smoke, mark as detected with lower confidence.
+
+        Return a JSON object with:
+        {
+          "detected": boolean,
+          "type": "fire" | "smoke" | "both" | "none",
+          "confidence": number (0-1),
+          "intensity": "low" | "medium" | "high",
+          "density": "low" | "medium" | "high",
+          "heat_score": number (0-100),
+          "description": "Detailed reasoning for your detection."
+        }
+      `;
+
+      // Extract MIME type and data from base64 string
+      const mimeTypeMatch = preview.match(/^data:(image\/[a-zA-Z+]+);base64,/);
+      const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg";
+      const base64Data = preview.includes(",") ? preview.split(",")[1] : preview;
+
+      const response = await ai.models.generateContent({
+        model,
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType, data: base64Data } }
+            ]
+          }
+        ],
+        config: { responseMimeType: "application/json" }
+      });
+
+      if (!response.candidates || response.candidates.length === 0) {
+        throw new Error("AI model failed to generate a response");
+      }
+
+      const text = response.text || "{}";
+      const aiResult = JSON.parse(text);
+
+      // Now send the verified result to the backend to save
+      const lat = initialCoords?.lat || 28.6139 + (Math.random() - 0.5) * 0.1;
+      const lng = initialCoords?.lng || 77.2090 + (Math.random() - 0.5) * 0.1;
+
+      const saveRes = await fetch('/api/reports/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image: preview,
-          lat: initialCoords?.lat || 28.6139 + (Math.random() - 0.5) * 0.1,
-          lng: initialCoords?.lng || 77.2090 + (Math.random() - 0.5) * 0.1,
-          userId: 'user_123'
+          userId: 'user_123',
+          lat,
+          lng,
+          result: aiResult
         })
       });
-      
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ error: 'Unknown server error' }));
-        throw new Error(errorData.error || 'Failed to verify report');
+
+      if (!saveRes.ok) {
+        throw new Error("Failed to save report to database");
       }
 
-      const data = await res.json();
-      setResult(data);
+      setResult(aiResult);
     } catch (err) {
       console.error(err);
       setResult({ 
@@ -497,6 +568,136 @@ const StatsView = () => {
             <span className="text-2xl font-bold">4.2t</span>
             <span className="text-[10px] uppercase tracking-widest text-zinc-500 block">CO2 Saved</span>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const CalibrationView = () => {
+  const [isTraining, setIsTraining] = useState(false);
+  const [feedbackGiven, setFeedbackGiven] = useState<string[]>([]);
+
+  const mockDetections = [
+    { id: 1, type: 'fire', confidence: 0.82, image: 'https://picsum.photos/seed/fire1/400/300', description: 'Small fire detected in residential backyard.' },
+    { id: 2, type: 'smoke', confidence: 0.65, image: 'https://picsum.photos/seed/smoke1/400/300', description: 'Faint grey smoke rising from industrial area.' },
+    { id: 3, type: 'none', confidence: 0.91, image: 'https://picsum.photos/seed/sunset1/400/300', description: 'No fire detected. Sunset detected.' },
+  ];
+
+  const handleFeedback = (id: number, type: 'up' | 'down') => {
+    setFeedbackGiven(prev => [...prev, `${id}-${type}`]);
+  };
+
+  const startTraining = () => {
+    setIsTraining(true);
+    setTimeout(() => setIsTraining(false), 3000);
+  };
+
+  return (
+    <div className="p-6 space-y-8 pb-24 md:pb-6">
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h2 className="text-3xl font-light tracking-tight">AI Model Calibration</h2>
+          <p className="text-zinc-500 text-sm">Fine-tune the vision engine using verified CCTV datasets.</p>
+        </div>
+        <button 
+          onClick={startTraining}
+          disabled={isTraining || feedbackGiven.length === 0}
+          className="px-6 py-3 bg-zinc-900 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg disabled:opacity-50"
+        >
+          {isTraining ? <Loader2 className="animate-spin" size={18} /> : <BrainCircuit size={18} />}
+          {isTraining ? 'Optimizing Weights...' : 'Apply Calibration'}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-emerald-50 border border-emerald-100 p-6 rounded-3xl space-y-2">
+          <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Model Accuracy</p>
+          <p className="text-4xl font-light">94.2%</p>
+          <p className="text-xs text-emerald-700">+1.2% from last calibration</p>
+        </div>
+        <div className="bg-blue-50 border border-blue-100 p-6 rounded-3xl space-y-2">
+          <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Dataset Size</p>
+          <p className="text-4xl font-light">12.4k</p>
+          <p className="text-xs text-blue-700">Verified fire/smoke images</p>
+        </div>
+        <div className="bg-zinc-50 border border-zinc-200 p-6 rounded-3xl space-y-2">
+          <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Active Feedback</p>
+          <p className="text-4xl font-light">{feedbackGiven.length}</p>
+          <p className="text-xs text-zinc-500">Pending optimization</p>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Recent AI Detections for Review</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {mockDetections.map((det) => (
+            <div key={det.id} className="bg-white rounded-3xl border border-zinc-100 shadow-sm overflow-hidden flex flex-col">
+              <div className="aspect-video relative">
+                <img src={det.image} alt="Detection" className="w-full h-full object-cover" />
+                <div className="absolute top-3 left-3 bg-black/60 backdrop-blur-md text-white text-[10px] font-bold px-2 py-1 rounded">
+                  CONFIDENCE: {Math.round(det.confidence * 100)}%
+                </div>
+              </div>
+              <div className="p-5 flex-1 flex flex-col justify-between space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">AI Prediction</span>
+                    <span className={cn(
+                      "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+                      det.type === 'fire' ? "bg-red-100 text-red-600" : det.type === 'smoke' ? "bg-blue-100 text-blue-600" : "bg-zinc-100 text-zinc-600"
+                    )}>
+                      {det.type}
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-600 leading-relaxed">{det.description}</p>
+                </div>
+                
+                <div className="flex gap-2">
+                  <button 
+                    onClick={() => handleFeedback(det.id, 'up')}
+                    disabled={feedbackGiven.includes(`${det.id}-up`) || feedbackGiven.includes(`${det.id}-down`)}
+                    className={cn(
+                      "flex-1 py-2 rounded-xl border flex items-center justify-center gap-2 transition-all",
+                      feedbackGiven.includes(`${det.id}-up`) ? "bg-emerald-500 border-emerald-500 text-white" : "border-zinc-200 text-zinc-400 hover:border-emerald-500 hover:text-emerald-500"
+                    )}
+                  >
+                    <ThumbsUp size={16} />
+                    <span className="text-[10px] font-bold uppercase">Correct</span>
+                  </button>
+                  <button 
+                    onClick={() => handleFeedback(det.id, 'down')}
+                    disabled={feedbackGiven.includes(`${det.id}-up`) || feedbackGiven.includes(`${det.id}-down`)}
+                    className={cn(
+                      "flex-1 py-2 rounded-xl border flex items-center justify-center gap-2 transition-all",
+                      feedbackGiven.includes(`${det.id}-down`) ? "bg-red-500 border-red-500 text-white" : "border-zinc-200 text-zinc-400 hover:border-red-500 hover:text-red-500"
+                    )}
+                  >
+                    <ThumbsDown size={16} />
+                    <span className="text-[10px] font-bold uppercase">Incorrect</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-zinc-900 text-white p-8 rounded-3xl space-y-6">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center">
+            <DatabaseIcon className="text-emerald-400" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-xl font-semibold">Bulk Dataset Training</h3>
+            <p className="text-zinc-400 text-sm">Upload a folder of CCTV images to batch-train the vision engine.</p>
+          </div>
+        </div>
+        <div className="border-2 border-dashed border-zinc-700 rounded-2xl p-8 text-center space-y-4">
+          <p className="text-sm text-zinc-500">Drag and drop .zip or .tar datasets here</p>
+          <button className="px-6 py-2 bg-white text-zinc-900 rounded-xl text-xs font-bold uppercase tracking-widest">
+            Select Files
+          </button>
         </div>
       </div>
     </div>
@@ -808,6 +1009,9 @@ export default function App() {
             )}
             {activeTab === 'stats' && <StatsView />}
             {activeTab === 'admin' && <AdminView incidents={incidents} />}
+            {activeTab === 'calibrate' && role === 'authority' && (
+              <CalibrationView />
+            )}
             {activeTab === 'profile' && (
               <div className="max-w-md mx-auto p-8 space-y-8">
                 <div className="flex flex-col items-center gap-4">

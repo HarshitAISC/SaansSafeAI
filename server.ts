@@ -72,72 +72,14 @@ async function startServer() {
   // AI Pipeline using Gemini
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-  app.post("/api/reports/verify", async (req, res) => {
-    const { image, lat, lng, userId } = req.body;
+  app.post("/api/reports/save", async (req, res) => {
+    const { userId, lat, lng, result } = req.body;
     
-    if (!image || !lat || !lng) {
-      return res.status(400).json({ error: "Missing required fields: image, lat, or lng" });
+    if (!result || !lat || !lng) {
+      return res.status(400).json({ error: "Missing required fields: result, lat, or lng" });
     }
 
     try {
-      console.log(`[AI Pipeline] Verifying report from user ${userId} at ${lat}, ${lng}`);
-      const model = "gemini-3-flash-preview";
-      const prompt = `
-        You are an expert fire and smoke detection system for the SaansSafe platform in Delhi.
-        Your task is to analyze the provided image with high sensitivity for any signs of:
-        1. Open fires (garbage burning, leaf burning, small bonfires, or large blazes).
-        2. Smoke plumes (thick black smoke, grey smoke, or even faint white smoke rising from a point source).
-        3. Illegal industrial or residential emissions.
-
-        Be vigilant. Even small, distant, or early-stage fires/smoke are critical for air quality monitoring.
-        If you see any orange/red glow, flickering flames, or localized smoke rising, mark it as detected.
-
-        Return a JSON object with:
-        {
-          "detected": boolean,
-          "type": "fire" | "smoke" | "both" | "none",
-          "confidence": number (0-1),
-          "intensity": "low" | "medium" | "high",
-          "density": "low" | "medium" | "high",
-          "heat_score": number (0-100) based on fire size and intensity,
-          "description": "A detailed explanation of what you see, including the location of the fire/smoke in the image."
-        }
-      `;
-
-      // Extract MIME type and data from base64 string
-      const mimeTypeMatch = image.match(/^data:(image\/[a-zA-Z+]+);base64,/);
-      const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg";
-      const base64Data = image.includes(",") ? image.split(",")[1] : image;
-
-      const response = await ai.models.generateContent({
-        model,
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType, data: base64Data } }
-            ]
-          }
-        ],
-        config: { responseMimeType: "application/json" }
-      });
-
-      if (!response.candidates || response.candidates.length === 0) {
-        console.error("[AI Pipeline] No candidates returned from model");
-        return res.status(500).json({ error: "AI model failed to generate a response" });
-      }
-
-      const text = response.text || "{}";
-      console.log(`[AI Pipeline] Model response: ${text}`);
-      
-      let result;
-      try {
-        result = JSON.parse(text);
-      } catch (parseError) {
-        console.error("[AI Pipeline] JSON Parse Error:", parseError, "Raw text:", text);
-        return res.status(500).json({ error: "Failed to parse AI response", raw: text });
-      }
-      
       const reportId = Math.random().toString(36).substring(7);
       
       if (result.detected) {
@@ -165,13 +107,14 @@ async function startServer() {
 
         // Broadcast to all clients
         io.emit("new_incident", incident);
-        console.log(`[AI Pipeline] Incident verified and broadcasted: ${eventId}`);
+        console.log(`[Backend] Incident saved and broadcasted: ${eventId}`);
+        return res.json({ success: true, incident });
+      } else {
+        return res.json({ success: true, detected: false });
       }
-
-      res.json(result);
     } catch (error) {
-      console.error("[AI Pipeline] Verification Error:", error);
-      res.status(500).json({ error: "Failed to verify report", details: error instanceof Error ? error.message : String(error) });
+      console.error("[Backend] Save Error:", error);
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
