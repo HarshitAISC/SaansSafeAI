@@ -19,7 +19,8 @@ import {
   BrainCircuit,
   Database as DatabaseIcon,
   ThumbsUp,
-  ThumbsDown
+  ThumbsDown,
+  Video
 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { GoogleGenAI } from "@google/genai";
@@ -81,7 +82,7 @@ const NavItem = ({ icon, label, active, onClick }: { icon: React.ReactNode, labe
   </button>
 );
 
-const HeatmapLayer = ({ incidents }: { incidents: any[] }) => {
+const HeatmapLayer = ({ incidents, role }: { incidents: any[], role: string }) => {
   return (
     <>
       {incidents.map((inc) => {
@@ -131,8 +132,20 @@ const HeatmapLayer = ({ incidents }: { incidents: any[] }) => {
               }}
             >
               <Popup>
-                <div className="p-2 space-y-1">
+                <div className="p-2 space-y-2 min-w-[150px]">
                   <p className="font-bold text-sm">Fire Detected</p>
+
+                  {role === 'authority' && inc.image_url && (
+                    <div className="aspect-video w-full rounded-lg overflow-hidden bg-zinc-100 mb-2">
+                      <img 
+                        src={inc.image_url} 
+                        alt="Reported evidence" 
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+                  )}
+
                   <div className="flex items-center gap-2">
                     <span className="text-[10px] uppercase tracking-widest text-zinc-400">Heat Score</span>
                     <span className="font-bold text-orange-600">{heat}</span>
@@ -149,11 +162,59 @@ const HeatmapLayer = ({ incidents }: { incidents: any[] }) => {
   );
 };
 
-const MapView = ({ incidents, onMapClick, timeframe, setTimeframe }: { 
+const HotspotLayer = () => {
+  const [hotspots, setHotspots] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchHotspots = () => {
+      fetch('/api/hotspots')
+        .then(res => res.json())
+        .then(data => setHotspots(data))
+        .catch(err => console.error('Error fetching hotspots:', err));
+    };
+
+    fetchHotspots();
+    const interval = setInterval(fetchHotspots, 60000); // Update every minute
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <>
+      {hotspots.map((spot, idx) => (
+        <CircleMarker
+          key={`hotspot-${idx}`}
+          center={[spot.lat, spot.lng]}
+          radius={30 + (spot.detection_count * 5)}
+          pathOptions={{
+            fillColor: '#ef4444',
+            fillOpacity: 0.15,
+            color: '#ef4444',
+            weight: 1,
+            dashArray: '5, 10'
+          }}
+        >
+          <Popup>
+            <div className="p-2 space-y-1">
+              <p className="font-bold text-sm text-red-600">Active Hotspot</p>
+              <p className="text-[10px] text-zinc-500">This area has seen {spot.detection_count} detections in the last 24h.</p>
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-[10px] font-bold uppercase text-zinc-400">Avg Heat</span>
+                <span className="text-xs font-bold text-red-600">{Math.round(spot.avg_heat_score)}%</span>
+              </div>
+            </div>
+          </Popup>
+        </CircleMarker>
+      ))}
+    </>
+  );
+};
+
+const MapView = ({ incidents, onMapClick, timeframe, setTimeframe, role }: { 
   incidents: any[], 
   onMapClick?: (lat: number, lng: number) => void,
   timeframe?: 'live' | 'previous_night',
-  setTimeframe?: (t: 'live' | 'previous_night') => void
+  setTimeframe?: (t: 'live' | 'previous_night') => void,
+  role: string
 }) => {
   const MapEvents = () => {
     useMapEvents({
@@ -176,7 +237,8 @@ const MapView = ({ incidents, onMapClick, timeframe, setTimeframe }: {
           url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
         />
-        <HeatmapLayer incidents={incidents} />
+        <HeatmapLayer incidents={incidents} role={role} />
+        {timeframe === 'live' && <HotspotLayer />}
         <MapEvents />
       </MapContainer>
 
@@ -324,7 +386,8 @@ const ReportView = ({ onReport, initialCoords }: { onReport: (data: any) => void
           userId: 'user_123',
           lat,
           lng,
-          result: aiResult
+          result: aiResult,
+          image_url: preview
         })
       });
 
@@ -704,6 +767,158 @@ const CalibrationView = () => {
   );
 };
 
+const CCTVMonitor = () => {
+  const [cameras, setCameras] = useState<any[]>([]);
+  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [analysisLog, setAnalysisLog] = useState<string[]>([]);
+  const [currentCameraIdx, setCurrentCameraIdx] = useState(0);
+
+  useEffect(() => {
+    fetch('/api/cameras')
+      .then(res => res.json())
+      .then(data => setCameras(data));
+  }, []);
+
+  const runAIAnalysis = async (camera: any) => {
+    try {
+      setAnalysisLog(prev => [`[${new Date().toLocaleTimeString()}] Analyzing ${camera.name}...`, ...prev.slice(0, 9)]);
+      
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+
+      // Simulate capturing a frame from the CCTV stream
+      const imageUrl = `https://picsum.photos/seed/${camera.id}_${Date.now()}/800/600`;
+      const imageResp = await fetch(imageUrl);
+      const blob = await imageResp.blob();
+      const reader = new FileReader();
+      
+      const base64Promise = new Promise<string>((resolve) => {
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.readAsDataURL(blob);
+      });
+      
+      const base64Data = await base64Promise;
+      const data = base64Data.split(',')[1];
+
+      const prompt = "Analyze this CCTV frame for any signs of fire or smoke. Return JSON: { detected: boolean, confidence: number, intensity: 'low'|'medium'|'high', description: string }";
+      
+      const result = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: "image/jpeg", data } }
+          ]
+        }],
+        config: { responseMimeType: "application/json" }
+      });
+
+      const analysis = JSON.parse(result.text || "{}");
+      
+      if (analysis.detected) {
+        setAnalysisLog(prev => [`[ALERT] Fire detected at ${camera.name}! Confidence: ${Math.round(analysis.confidence * 100)}%`, ...prev.slice(0, 9)]);
+        
+        // Save to backend
+        await fetch('/api/reports/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: 'system_cctv',
+            lat: camera.location_lat,
+            lng: camera.location_lng,
+            image_url: imageUrl,
+            result: {
+              ...analysis,
+              heat_score: Math.floor(analysis.confidence * 100)
+            }
+          })
+        });
+      } else {
+        setAnalysisLog(prev => [`[OK] No fire detected at ${camera.name}.`, ...prev.slice(0, 9)]);
+      }
+    } catch (error) {
+      console.error("CCTV AI Error:", error);
+      setAnalysisLog(prev => [`[ERROR] AI analysis failed for ${camera.name}`, ...prev.slice(0, 9)]);
+    }
+  };
+
+  useEffect(() => {
+    let interval: any;
+    if (isMonitoring && cameras.length > 0) {
+      interval = setInterval(() => {
+        const cam = cameras[currentCameraIdx];
+        runAIAnalysis(cam);
+        setCurrentCameraIdx((prev) => (prev + 1) % cameras.length);
+      }, 15000); // Analyze every 15 seconds
+    }
+    return () => clearInterval(interval);
+  }, [isMonitoring, cameras, currentCameraIdx]);
+
+  return (
+    <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-red-50 text-red-600 rounded-xl">
+            <Video size={20} />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-900">CCTV AI Monitor</h3>
+            <p className="text-[10px] text-zinc-400">Real-time surveillance analysis</p>
+          </div>
+        </div>
+        <button 
+          onClick={() => setIsMonitoring(!isMonitoring)}
+          className={cn(
+            "px-4 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all",
+            isMonitoring ? "bg-red-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+          )}
+        >
+          {isMonitoring ? "Stop Monitoring" : "Start AI Surveillance"}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="space-y-4">
+          <h4 className="text-[10px] font-bold uppercase text-zinc-400 tracking-wider">Active Streams ({cameras.length})</h4>
+          <div className="space-y-2 max-h-60 overflow-y-auto pr-2 custom-scrollbar">
+            {cameras.map((cam, idx) => (
+              <div key={cam.id} className={cn(
+                "p-3 rounded-2xl border transition-all flex items-center justify-between",
+                idx === currentCameraIdx && isMonitoring ? "bg-emerald-50 border-emerald-100" : "bg-zinc-50 border-zinc-100"
+              )}>
+                <div className="flex items-center gap-3">
+                  <div className={cn(
+                    "w-2 h-2 rounded-full",
+                    idx === currentCameraIdx && isMonitoring ? "bg-emerald-500 animate-pulse" : "bg-zinc-300"
+                  )} />
+                  <span className="text-xs font-medium text-zinc-700">{cam.name}</span>
+                </div>
+                <span className="text-[10px] text-zinc-400 font-mono">{cam.id}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <h4 className="text-[10px] font-bold uppercase text-zinc-400 tracking-wider">AI Analysis Log</h4>
+          <div className="bg-zinc-900 rounded-2xl p-4 h-60 overflow-y-auto font-mono text-[10px] space-y-2">
+            {analysisLog.length === 0 && <p className="text-zinc-600 italic">Waiting for surveillance to start...</p>}
+            {analysisLog.map((log, i) => (
+              <p key={i} className={cn(
+                "leading-relaxed",
+                log.includes('[ALERT]') ? "text-red-400 font-bold" : 
+                log.includes('[ERROR]') ? "text-orange-400" : 
+                log.includes('[OK]') ? "text-emerald-400" : "text-zinc-400"
+              )}>
+                {log}
+              </p>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const AdminView = ({ incidents }: { incidents: any[] }) => {
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
@@ -794,10 +1009,12 @@ const AdminView = ({ incidents }: { incidents: any[] }) => {
         </div>
       )}
 
+      <CCTVMonitor />
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">
           <div className="h-[500px]">
-            <MapView incidents={incidents} />
+            <MapView incidents={incidents} role="authority" />
           </div>
           
           <div className="space-y-4">
@@ -994,6 +1211,7 @@ export default function App() {
                   onMapClick={handleMapClick} 
                   timeframe={timeframe}
                   setTimeframe={setTimeframe}
+                  role={role}
                 />
               </div>
             )}

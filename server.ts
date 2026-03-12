@@ -50,7 +50,31 @@ db.exec(`
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     resolved INTEGER DEFAULT 0
   );
+
+  CREATE TABLE IF NOT EXISTS cameras (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    location_lat REAL,
+    location_lng REAL,
+    status TEXT DEFAULT 'active',
+    last_ping DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
+
+// Seed some cameras if empty
+const cameraCount = db.prepare("SELECT COUNT(*) as count FROM cameras").get() as { count: number };
+if (cameraCount.count === 0) {
+  const cameras = [
+    { id: 'cam_01', name: 'Connaught Place North', lat: 28.6328, lng: 77.2197 },
+    { id: 'cam_02', name: 'Chandni Chowk Main', lat: 28.6507, lng: 77.2334 },
+    { id: 'cam_03', name: 'India Gate Circle', lat: 28.6129, lng: 77.2295 },
+    { id: 'cam_04', name: 'Okhla Industrial Area', lat: 28.5355, lng: 77.2732 },
+    { id: 'cam_05', name: 'Anand Vihar ISBT', lat: 28.6465, lng: 77.3160 },
+  ];
+  const insert = db.prepare("INSERT INTO cameras (id, name, location_lat, location_lng) VALUES (?, ?, ?, ?)");
+  cameras.forEach(c => insert.run(c.id, c.name, c.lat, c.lng));
+}
+
 
 async function startServer() {
   const app = express();
@@ -73,7 +97,7 @@ async function startServer() {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
   app.post("/api/reports/save", async (req, res) => {
-    const { userId, lat, lng, result } = req.body;
+    const { userId, lat, lng, result, image_url } = req.body;
     
     if (!result || !lat || !lng) {
       return res.status(400).json({ error: "Missing required fields: result, lat, or lng" });
@@ -86,7 +110,7 @@ async function startServer() {
         db.prepare(`
           INSERT INTO reports (id, user_id, image_url, location_lat, location_lng, status, confidence_score, fire_intensity, smoke_density, ai_analysis)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(reportId, userId, "uploaded_image", lat, lng, 'verified', result.confidence, result.intensity, result.density, result.description);
+        `).run(reportId, userId, image_url || "uploaded_image", lat, lng, 'verified', result.confidence, result.intensity, result.density, result.description);
 
         const eventId = Math.random().toString(36).substring(7);
         db.prepare(`
@@ -121,7 +145,12 @@ async function startServer() {
   app.get("/api/incidents", (req, res) => {
     try {
       const { timeframe } = req.query;
-      let query = "SELECT * FROM fire_events WHERE resolved = 0";
+      let query = `
+        SELECT f.*, r.image_url 
+        FROM fire_events f
+        LEFT JOIN reports r ON f.report_id = r.id
+        WHERE f.resolved = 0
+      `;
       let params: any[] = [];
 
       if (timeframe === 'previous_night') {
@@ -137,6 +166,37 @@ async function startServer() {
       res.json(incidents);
     } catch (error) {
       console.error("Error fetching incidents:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.get("/api/cameras", (req, res) => {
+    try {
+      const cameras = db.prepare("SELECT * FROM cameras").all();
+      res.json(cameras);
+    } catch (error) {
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.get("/api/hotspots", (req, res) => {
+    try {
+      // Aggregate fire events into hotspots (simple clustering by rounding lat/lng)
+      const hotspots = db.prepare(`
+        SELECT 
+          ROUND(location_lat, 3) as lat, 
+          ROUND(location_lng, 3) as lng, 
+          COUNT(*) as detection_count,
+          AVG(heat_score) as avg_heat_score,
+          MAX(timestamp) as last_detected
+        FROM fire_events
+        WHERE timestamp > datetime('now', '-24 hours')
+        GROUP BY ROUND(location_lat, 3), ROUND(location_lng, 3)
+        HAVING COUNT(*) > 1
+        ORDER BY detection_count DESC
+      `).all();
+      res.json(hotspots);
+    } catch (error) {
       res.status(500).json({ error: "Internal Server Error" });
     }
   });
