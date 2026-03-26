@@ -162,22 +162,7 @@ const HeatmapLayer = ({ incidents, role }: { incidents: any[], role: string }) =
   );
 };
 
-const HotspotLayer = () => {
-  const [hotspots, setHotspots] = useState<any[]>([]);
-
-  useEffect(() => {
-    const fetchHotspots = () => {
-      fetch('/api/hotspots')
-        .then(res => res.json())
-        .then(data => setHotspots(data))
-        .catch(err => console.error('Error fetching hotspots:', err));
-    };
-
-    fetchHotspots();
-    const interval = setInterval(fetchHotspots, 60000); // Update every minute
-    return () => clearInterval(interval);
-  }, []);
-
+const HotspotLayer = ({ hotspots }: { hotspots: any[] }) => {
   return (
     <>
       {hotspots.map((spot, idx) => (
@@ -209,12 +194,174 @@ const HotspotLayer = () => {
   );
 };
 
-const MapView = ({ incidents, onMapClick, timeframe, setTimeframe, role }: { 
+const Onboarding = ({ onSetLocation }: { onSetLocation: (lat: number, lng: number) => void }) => {
+  const [isLocating, setIsLocating] = useState(false);
+
+  const handleUseGPS = () => {
+    setIsLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        onSetLocation(pos.coords.latitude, pos.coords.longitude);
+        setIsLocating(false);
+      },
+      (err) => {
+        console.error(err);
+        setIsLocating(false);
+        alert("Could not get your location. Please pick on the map.");
+      }
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-zinc-900/80 backdrop-blur-sm flex items-center justify-center p-6">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-white rounded-[40px] p-8 max-w-md w-full shadow-2xl space-y-8 text-center"
+      >
+        <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto">
+          <MapPin size={40} />
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-3xl font-bold tracking-tight">Welcome to SaansSafe</h2>
+          <p className="text-zinc-500">Set your location to receive accurate fire alerts and air quality advisories for your neighborhood.</p>
+        </div>
+        <div className="space-y-3">
+          <button 
+            onClick={handleUseGPS}
+            disabled={isLocating}
+            className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-100 disabled:opacity-50"
+          >
+            {isLocating ? <Loader2 className="animate-spin" size={20} /> : <Navigation size={20} />}
+            Use Current Location
+          </button>
+          <div className="relative py-2">
+            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-zinc-100"></div></div>
+            <div className="relative flex justify-center text-[10px] uppercase tracking-widest text-zinc-400 font-bold bg-white px-4">OR</div>
+          </div>
+          <p className="text-xs text-zinc-400 font-medium">Click anywhere on the map behind this dialog to set your location manually.</p>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
+const AQIFeed = ({ userLocation, hotspots }: { userLocation: { lat: number, lng: number } | null, hotspots: any[] }) => {
+  const [aqi, setAqi] = useState(145);
+  
+  useEffect(() => {
+    if (!userLocation) return;
+    
+    // Simulate AQI based on distance to hotspots
+    let impact = 0;
+    hotspots.forEach(spot => {
+      const dist = Math.sqrt(Math.pow(spot.lat - userLocation.lat, 2) + Math.pow(spot.lng - userLocation.lng, 2)) * 111; // Approx km
+      if (dist < 5) impact += (5 - dist) * 20;
+    });
+    
+    setAqi(Math.round(120 + impact + Math.random() * 10));
+  }, [userLocation, hotspots]);
+
+  const getAQIInfo = (val: number) => {
+    if (val <= 50) return { label: 'Good', color: 'bg-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50' };
+    if (val <= 100) return { label: 'Moderate', color: 'bg-yellow-500', text: 'text-yellow-600', bg: 'bg-yellow-50' };
+    if (val <= 150) return { label: 'Unhealthy for Sensitive Groups', color: 'bg-orange-500', text: 'text-orange-600', bg: 'bg-orange-50' };
+    if (val <= 200) return { label: 'Unhealthy', color: 'bg-red-500', text: 'text-red-600', bg: 'bg-red-50' };
+    if (val <= 300) return { label: 'Very Unhealthy', color: 'bg-purple-500', text: 'text-purple-600', bg: 'bg-purple-50' };
+    return { label: 'Hazardous', color: 'bg-rose-900', text: 'text-rose-900', bg: 'bg-rose-50' };
+  };
+
+  const info = getAQIInfo(aqi);
+
+  return (
+    <div className={cn("p-6 rounded-3xl border transition-colors", info.bg, "border-zinc-100 shadow-sm space-y-4")}>
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Live Air Quality</h3>
+          <p className={cn("text-xl font-bold", info.text)}>{info.label}</p>
+        </div>
+        <div className={cn("w-16 h-16 rounded-2xl flex flex-col items-center justify-center text-white shadow-lg", info.color)}>
+          <span className="text-2xl font-bold leading-none">{aqi}</span>
+          <span className="text-[8px] font-bold uppercase tracking-tighter">AQI</span>
+        </div>
+      </div>
+      <div className="h-1.5 bg-zinc-200/50 rounded-full overflow-hidden">
+        <motion.div 
+          initial={{ width: 0 }}
+          animate={{ width: `${Math.min((aqi / 300) * 100, 100)}%` }}
+          className={cn("h-full", info.color)}
+        />
+      </div>
+    </div>
+  );
+};
+
+const AdvisorySection = ({ userLocation, hotspots }: { userLocation: { lat: number, lng: number } | null, hotspots: any[] }) => {
+  const [nearestDist, setNearestDist] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!userLocation || hotspots.length === 0) return;
+    
+    const distances = hotspots.map(spot => {
+      return Math.sqrt(Math.pow(spot.lat - userLocation.lat, 2) + Math.pow(spot.lng - userLocation.lng, 2)) * 111;
+    });
+    setNearestDist(Math.min(...distances));
+  }, [userLocation, hotspots]);
+
+  const getAdvisory = () => {
+    if (nearestDist === null) return { title: 'Scanning...', text: 'Analyzing nearby hotspots for safety advice.', icon: Loader2, iconProps: { className: "animate-spin" }, color: 'bg-zinc-100 text-zinc-600' };
+    if (nearestDist < 2) return { 
+      title: 'Critical Advisory', 
+      text: 'High fire activity detected within 2km. Keep all windows closed. Use air purifiers if available. Avoid any outdoor physical activity.', 
+      icon: AlertTriangle,
+      iconProps: {},
+      color: 'bg-red-50 text-red-700 border-red-100' 
+    };
+    if (nearestDist < 5) return { 
+      title: 'Health Warning', 
+      text: 'Smoke plumes detected in your vicinity. Sensitive groups (children, elderly) should stay indoors. Wear an N95 mask if going outside.', 
+      icon: ShieldAlert,
+      iconProps: {},
+      color: 'bg-orange-50 text-orange-700 border-orange-100' 
+    };
+    return { 
+      title: 'Safe Zone', 
+      text: 'No immediate fire threats detected within 5km. Air quality is within normal seasonal ranges for your area.', 
+      icon: CheckCircle2,
+      iconProps: {},
+      color: 'bg-emerald-50 text-emerald-700 border-emerald-100' 
+    };
+  };
+
+  const advice = getAdvisory();
+  const Icon = advice.icon;
+
+  return (
+    <div className={cn("p-6 rounded-3xl border space-y-4 shadow-sm", advice.color)}>
+      <div className="flex items-center gap-3">
+        <div className="p-2 bg-white/50 rounded-xl">
+          <Icon size={24} {...advice.iconProps} />
+        </div>
+        <h3 className="text-lg font-bold tracking-tight">{advice.title}</h3>
+      </div>
+      <p className="text-sm leading-relaxed font-medium opacity-90">{advice.text}</p>
+      {nearestDist !== null && (
+        <div className="pt-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest opacity-60">
+          <Navigation size={10} />
+          Nearest Hotspot: {nearestDist.toFixed(1)} km away
+        </div>
+      )}
+    </div>
+  );
+};
+
+const MapView = ({ incidents, onMapClick, timeframe, setTimeframe, role, hotspots }: { 
   incidents: any[], 
   onMapClick?: (lat: number, lng: number) => void,
   timeframe?: 'live' | 'previous_night',
   setTimeframe?: (t: 'live' | 'previous_night') => void,
-  role: string
+  role: string,
+  hotspots: any[]
 }) => {
   const MapEvents = () => {
     useMapEvents({
@@ -238,7 +385,7 @@ const MapView = ({ incidents, onMapClick, timeframe, setTimeframe, role }: {
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
         />
         <HeatmapLayer incidents={incidents} role={role} />
-        {timeframe === 'live' && <HotspotLayer />}
+        {timeframe === 'live' && <HotspotLayer hotspots={hotspots} />}
         <MapEvents />
       </MapContainer>
 
@@ -919,7 +1066,7 @@ const CCTVMonitor = () => {
   );
 };
 
-const AdminView = ({ incidents }: { incidents: any[] }) => {
+const AdminView = ({ incidents, hotspots }: { incidents: any[], hotspots: any[] }) => {
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
 
@@ -1014,7 +1161,7 @@ const AdminView = ({ incidents }: { incidents: any[] }) => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">
           <div className="h-[500px]">
-            <MapView incidents={incidents} role="authority" />
+            <MapView incidents={incidents} role="authority" hotspots={hotspots} />
           </div>
           
           <div className="space-y-4">
@@ -1156,8 +1303,14 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('map');
   const [role, setRole] = useState<'citizen' | 'authority'>('citizen');
   const [incidents, setIncidents] = useState<any[]>([]);
+  const [hotspots, setHotspots] = useState<any[]>([]);
   const [timeframe, setTimeframe] = useState<'live' | 'previous_night'>('live');
   const [selectedCoords, setSelectedCoords] = useState<{ lat: number, lng: number } | null>(null);
+  const [userLocation, setUserLocation] = useState<{ lat: number, lng: number } | null>(() => {
+    const saved = localStorage.getItem('user_location');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [showOnboarding, setShowOnboarding] = useState(!userLocation);
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
@@ -1170,6 +1323,16 @@ export default function App() {
       .then(data => setIncidents(data))
       .catch(err => console.error('Error fetching incidents:', err));
 
+    // Fetch hotspots
+    const fetchHotspots = () => {
+      fetch('/api/hotspots')
+        .then(res => res.json())
+        .then(data => setHotspots(data))
+        .catch(err => console.error('Error fetching hotspots:', err));
+    };
+    fetchHotspots();
+    const hotspotInterval = setInterval(fetchHotspots, 60000);
+
     // Socket setup
     socketRef.current = io();
     socketRef.current.on('new_incident', (incident) => {
@@ -1180,10 +1343,22 @@ export default function App() {
 
     return () => {
       socketRef.current?.disconnect();
+      clearInterval(hotspotInterval);
     };
   }, [role, timeframe]);
 
+  const saveLocation = (lat: number, lng: number) => {
+    const loc = { lat, lng };
+    setUserLocation(loc);
+    localStorage.setItem('user_location', JSON.stringify(loc));
+    setShowOnboarding(false);
+  };
+
   const handleMapClick = (lat: number, lng: number) => {
+    if (showOnboarding) {
+      saveLocation(lat, lng);
+      return;
+    }
     if (role === 'citizen' && timeframe === 'live') {
       setSelectedCoords({ lat, lng });
       setActiveTab('report');
@@ -1205,14 +1380,23 @@ export default function App() {
             className="h-full"
           >
             {activeTab === 'map' && (
-              <div className="h-full p-4 md:p-8">
-                <MapView 
-                  incidents={incidents} 
-                  onMapClick={handleMapClick} 
-                  timeframe={timeframe}
-                  setTimeframe={setTimeframe}
-                  role={role}
-                />
+              <div className="h-full p-4 md:p-8 space-y-6">
+                <div className="h-[500px]">
+                  <MapView 
+                    incidents={incidents} 
+                    onMapClick={handleMapClick} 
+                    timeframe={timeframe}
+                    setTimeframe={setTimeframe}
+                    role={role}
+                    hotspots={hotspots}
+                  />
+                </div>
+                {role === 'citizen' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-24 md:pb-0">
+                    <AQIFeed userLocation={userLocation} hotspots={hotspots} />
+                    <AdvisorySection userLocation={userLocation} hotspots={hotspots} />
+                  </div>
+                )}
               </div>
             )}
             {activeTab === 'report' && (
@@ -1226,7 +1410,7 @@ export default function App() {
               />
             )}
             {activeTab === 'stats' && <StatsView />}
-            {activeTab === 'admin' && <AdminView incidents={incidents} />}
+            {activeTab === 'admin' && <AdminView incidents={incidents} hotspots={hotspots} />}
             {activeTab === 'calibrate' && role === 'authority' && (
               <CalibrationView />
             )}
@@ -1275,6 +1459,8 @@ export default function App() {
           </motion.div>
         </AnimatePresence>
       </main>
+
+      {showOnboarding && <Onboarding onSetLocation={saveLocation} />}
 
       {/* Global Alert Overlay */}
       <AnimatePresence>
