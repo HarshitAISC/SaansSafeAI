@@ -51,6 +51,19 @@ db.exec(`
     resolved INTEGER DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS daily_fire_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lat REAL,
+    lng REAL,
+    image_url TEXT,
+    source TEXT,
+    place_name TEXT,
+    intensity TEXT,
+    date TEXT,
+    time TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS cameras (
     id TEXT PRIMARY KEY,
     name TEXT,
@@ -117,6 +130,22 @@ async function startServer() {
           INSERT INTO fire_events (id, report_id, location_lat, location_lng, intensity, density, heat_score, source)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).run(eventId, reportId, lat, lng, result.intensity === 'high' ? 1.0 : 0.5, result.density === 'high' ? 1.0 : 0.5, result.heat_score || 50, 'citizen');
+
+        // Log to daily_fire_logs
+        const now = new Date();
+        db.prepare(`
+          INSERT INTO daily_fire_logs (lat, lng, image_url, source, place_name, intensity, date, time)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          lat, 
+          lng, 
+          image_url || "uploaded_image", 
+          'citizen', 
+          result.location_name || "Unknown Location", 
+          result.intensity, 
+          now.toISOString().split('T')[0], 
+          now.toTimeString().split(' ')[0]
+        );
 
         const incident = {
           id: eventId,
@@ -190,7 +219,7 @@ async function startServer() {
           AVG(heat_score) as avg_heat_score,
           MAX(timestamp) as last_detected
         FROM fire_events
-        WHERE timestamp > datetime('now', '-24 hours')
+        WHERE date(timestamp) = date('now')
         GROUP BY ROUND(location_lat, 3), ROUND(location_lng, 3)
         HAVING COUNT(*) > 1
         ORDER BY detection_count DESC
@@ -230,6 +259,22 @@ async function startServer() {
         INSERT INTO fire_events (id, report_id, location_lat, location_lng, intensity, density, heat_score, source)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(eventId, 'camera_auto', lat, lng, heatScore > 70 ? 1.0 : 0.5, heatScore > 70 ? 1.0 : 0.5, heatScore, 'camera');
+
+      // Log to daily_fire_logs
+      const now = new Date();
+      db.prepare(`
+        INSERT INTO daily_fire_logs (lat, lng, image_url, source, place_name, intensity, date, time)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        lat, 
+        lng, 
+        "cctv_feed_capture", 
+        'camera', 
+        "CCTV Monitored Zone", 
+        heatScore > 70 ? 'high' : 'medium', 
+        now.toISOString().split('T')[0], 
+        now.toTimeString().split(' ')[0]
+      );
 
       const incident = {
         id: eventId,
@@ -335,6 +380,60 @@ async function startServer() {
       res.json(stats);
     } catch (error) {
       console.error("Error fetching analytics:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.post("/api/ai/pollution-advice", async (req, res) => {
+    const { lat, lng, aqi, nearestHotspotDist } = req.body;
+    
+    try {
+      const prompt = `
+        As an environmental safety expert, provide a concise pollution advisory and precautionary measures for a citizen at coordinates (${lat}, ${lng}).
+        Current Air Quality Index (AQI): ${aqi}.
+        Nearest fire hotspot distance: ${nearestHotspotDist.toFixed(2)} km.
+        
+        Provide:
+        1. A short advisory title.
+        2. A brief explanation of the current risk.
+        3. 3-4 specific, actionable precautionary measures.
+        
+        Keep the tone professional and urgent if necessary. Format as JSON with fields: title, risk, measures (array of strings).
+      `;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const text = response.text;
+      
+      // Clean up JSON response if model adds markdown blocks
+      const jsonStr = (text || "").replace(/```json|```/g, "").trim();
+      res.json(JSON.parse(jsonStr));
+    } catch (error) {
+      console.error("AI Advice Error:", error);
+      res.status(500).json({ 
+        title: "General Advisory",
+        risk: "Unable to fetch real-time AI advice. Based on proximity, smoke levels may be elevated.",
+        measures: [
+          "Keep windows and doors closed.",
+          "Avoid strenuous outdoor activities.",
+          "Use an N95 mask if you must go outside.",
+          "Stay hydrated and monitor local news."
+        ]
+      });
+    }
+  });
+
+  app.get("/api/logs/daily", (req, res) => {
+    try {
+      const logs = db.prepare("SELECT * FROM daily_fire_logs ORDER BY timestamp DESC").all();
+      res.json(logs);
+    } catch (error) {
       res.status(500).json({ error: "Internal Server Error" });
     }
   });

@@ -13,6 +13,7 @@ import {
   MapPin,
   CheckCircle2,
   AlertTriangle,
+  ShieldCheck,
   X,
   Loader2,
   Navigation,
@@ -20,7 +21,9 @@ import {
   Database as DatabaseIcon,
   ThumbsUp,
   ThumbsDown,
-  Video
+  Video,
+  Activity,
+  ChevronRight
 } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { GoogleGenAI } from "@google/genai";
@@ -40,6 +43,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
+import Markdown from 'react-markdown';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -50,14 +54,28 @@ const DELHI_CENTER: [number, number] = [28.6139, 77.2090];
 
 // --- Components ---
 
+const Logo = ({ className = "w-10 h-10" }: { className?: string }) => (
+  <div className={cn("relative flex items-center justify-center overflow-hidden rounded-xl", className)}>
+    <div className="absolute inset-0 logo-gradient opacity-20" />
+    <div className="relative flex items-center justify-center gap-0.5">
+      <div className="w-1.5 h-6 bg-[#0066cc] rounded-full transform -rotate-12" />
+      <div className="w-1.5 h-8 bg-[#8cc63f] rounded-full" />
+      <div className="w-1.5 h-6 bg-[#f15a24] rounded-full transform rotate-12" />
+    </div>
+  </div>
+);
+
 const Navbar = ({ activeTab, setActiveTab, role }: { activeTab: string, setActiveTab: (t: string) => void, role: string }) => (
   <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-zinc-200 px-6 py-3 flex justify-around items-center z-50 md:top-0 md:bottom-auto md:flex-col md:w-20 md:h-full md:border-r md:border-t-0">
     <div className="hidden md:flex mb-8 items-center justify-center">
-      <div className="w-10 h-10 bg-emerald-600 rounded-xl flex items-center justify-center text-white font-bold">S</div>
+      <Logo />
     </div>
     <NavItem icon={<MapIcon size={24} />} label="Map" active={activeTab === 'map'} onClick={() => setActiveTab('map')} />
     {role === 'citizen' ? (
-      <NavItem icon={<Camera size={24} />} label="Report" active={activeTab === 'report'} onClick={() => setActiveTab('report')} />
+      <>
+        <NavItem icon={<Camera size={24} />} label="Report" active={activeTab === 'report'} onClick={() => setActiveTab('report')} />
+        <NavItem icon={<BrainCircuit size={24} />} label="AI Chat" active={activeTab === 'chat'} onClick={() => setActiveTab('chat')} />
+      </>
     ) : (
       <>
         <NavItem icon={<LayoutDashboard size={24} />} label="Admin" active={activeTab === 'admin'} onClick={() => setActiveTab('admin')} />
@@ -74,7 +92,7 @@ const NavItem = ({ icon, label, active, onClick }: { icon: React.ReactNode, labe
     onClick={onClick}
     className={cn(
       "flex flex-col items-center gap-1 transition-colors",
-      active ? "text-emerald-600" : "text-zinc-400 hover:text-zinc-600"
+      active ? "text-primary" : "text-zinc-400 hover:text-zinc-600"
     )}
   >
     {icon}
@@ -196,6 +214,17 @@ const HotspotLayer = ({ hotspots }: { hotspots: any[] }) => {
 
 const Onboarding = ({ onSetLocation }: { onSetLocation: (lat: number, lng: number) => void }) => {
   const [isLocating, setIsLocating] = useState(false);
+  const [mapCenter, setMapCenter] = useState<[number, number]>([28.6139, 77.2090]); // Default to Delhi
+
+  const MapCenterTracker = () => {
+    const map = useMapEvents({
+      move: () => {
+        const center = map.getCenter();
+        setMapCenter([center.lat, center.lng]);
+      },
+    });
+    return null;
+  };
 
   const handleUseGPS = () => {
     setIsLocating(true);
@@ -207,7 +236,7 @@ const Onboarding = ({ onSetLocation }: { onSetLocation: (lat: number, lng: numbe
       (err) => {
         console.error(err);
         setIsLocating(false);
-        alert("Could not get your location. Please pick on the map.");
+        alert("Could not get your location. Please move the map to your location.");
       }
     );
   };
@@ -217,36 +246,57 @@ const Onboarding = ({ onSetLocation }: { onSetLocation: (lat: number, lng: numbe
       <motion.div 
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="bg-white rounded-[40px] p-8 max-w-md w-full shadow-2xl space-y-8 text-center"
+        className="bg-white rounded-[40px] p-8 max-w-lg w-full shadow-2xl space-y-6 text-center overflow-hidden"
       >
-        <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto">
-          <MapPin size={40} />
-        </div>
         <div className="space-y-2">
-          <h2 className="text-3xl font-bold tracking-tight">Welcome to SaansSafe</h2>
-          <p className="text-zinc-500">Set your location to receive accurate fire alerts and air quality advisories for your neighborhood.</p>
+          <h2 className="text-3xl font-bold tracking-tight">Set Your Location</h2>
+          <p className="text-zinc-500 text-sm">Move the map to place the pin on your neighborhood.</p>
         </div>
-        <div className="space-y-3">
+
+        <div className="relative h-64 w-full rounded-3xl overflow-hidden border-4 border-zinc-50 shadow-inner group">
+          <MapContainer 
+            center={mapCenter} 
+            zoom={13} 
+            className="h-full w-full"
+            zoomControl={false}
+          >
+            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+            <MapCenterTracker />
+          </MapContainer>
+          
+          {/* Fixed Center Pin */}
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-[1000]">
+            <div className="relative -top-4 transition-transform group-active:scale-110">
+              <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-black/20 rounded-full blur-[2px]"></div>
+              <MapPin size={40} className="text-red-500 fill-red-500/20 drop-shadow-lg" />
+            </div>
+          </div>
+
           <button 
             onClick={handleUseGPS}
-            disabled={isLocating}
-            className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-100 disabled:opacity-50"
+            className="absolute bottom-4 right-4 z-[1000] p-3 bg-white rounded-2xl shadow-xl text-primary hover:bg-primary-light transition-colors"
           >
             {isLocating ? <Loader2 className="animate-spin" size={20} /> : <Navigation size={20} />}
-            Use Current Location
           </button>
-          <div className="relative py-2">
-            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-zinc-100"></div></div>
-            <div className="relative flex justify-center text-[10px] uppercase tracking-widest text-zinc-400 font-bold bg-white px-4">OR</div>
-          </div>
-          <p className="text-xs text-zinc-400 font-medium">Click anywhere on the map behind this dialog to set your location manually.</p>
+        </div>
+
+        <div className="space-y-3">
+          <button 
+            onClick={() => onSetLocation(mapCenter[0], mapCenter[1])}
+            className="w-full py-4 bg-primary text-white rounded-2xl font-bold flex items-center justify-center gap-2 shadow-lg hover:bg-primary/90 transition-all active:scale-95"
+          >
+            Confirm Location
+          </button>
+          <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
+            Lat: {mapCenter[0].toFixed(4)} • Lng: {mapCenter[1].toFixed(4)}
+          </p>
         </div>
       </motion.div>
     </div>
   );
 };
 
-const AQIFeed = ({ userLocation, hotspots }: { userLocation: { lat: number, lng: number } | null, hotspots: any[] }) => {
+const AQIFeed = ({ userLocation, hotspots, onAqiChange }: { userLocation: { lat: number, lng: number } | null, hotspots: any[], onAqiChange?: (aqi: number) => void }) => {
   const [aqi, setAqi] = useState(145);
   
   useEffect(() => {
@@ -259,12 +309,14 @@ const AQIFeed = ({ userLocation, hotspots }: { userLocation: { lat: number, lng:
       if (dist < 5) impact += (5 - dist) * 20;
     });
     
-    setAqi(Math.round(120 + impact + Math.random() * 10));
-  }, [userLocation, hotspots]);
+    const finalAqi = Math.round(120 + impact + Math.random() * 10);
+    setAqi(finalAqi);
+    onAqiChange?.(finalAqi);
+  }, [userLocation, hotspots, onAqiChange]);
 
   const getAQIInfo = (val: number) => {
-    if (val <= 50) return { label: 'Good', color: 'bg-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50' };
-    if (val <= 100) return { label: 'Moderate', color: 'bg-yellow-500', text: 'text-yellow-600', bg: 'bg-yellow-50' };
+    if (val <= 50) return { label: 'Good', color: 'bg-secondary', text: 'text-secondary', bg: 'bg-secondary-light' };
+    if (val <= 100) return { label: 'Moderate', color: 'bg-accent', text: 'text-accent', bg: 'bg-accent-light' };
     if (val <= 150) return { label: 'Unhealthy for Sensitive Groups', color: 'bg-orange-500', text: 'text-orange-600', bg: 'bg-orange-50' };
     if (val <= 200) return { label: 'Unhealthy', color: 'bg-red-500', text: 'text-red-600', bg: 'bg-red-50' };
     if (val <= 300) return { label: 'Very Unhealthy', color: 'bg-purple-500', text: 'text-purple-600', bg: 'bg-purple-50' };
@@ -296,8 +348,10 @@ const AQIFeed = ({ userLocation, hotspots }: { userLocation: { lat: number, lng:
   );
 };
 
-const AdvisorySection = ({ userLocation, hotspots }: { userLocation: { lat: number, lng: number } | null, hotspots: any[] }) => {
+const AdvisorySection = ({ userLocation, hotspots, aqi }: { userLocation: { lat: number, lng: number } | null, hotspots: any[], aqi: number }) => {
   const [nearestDist, setNearestDist] = useState<number | null>(null);
+  const [aiAdvice, setAiAdvice] = useState<{ title: string, risk: string, measures: string[] } | null>(null);
+  const [isLoadingAi, setIsLoadingAi] = useState(false);
 
   useEffect(() => {
     if (!userLocation || hotspots.length === 0) return;
@@ -305,11 +359,50 @@ const AdvisorySection = ({ userLocation, hotspots }: { userLocation: { lat: numb
     const distances = hotspots.map(spot => {
       return Math.sqrt(Math.pow(spot.lat - userLocation.lat, 2) + Math.pow(spot.lng - userLocation.lng, 2)) * 111;
     });
-    setNearestDist(Math.min(...distances));
-  }, [userLocation, hotspots]);
+    const min = Math.min(...distances);
+    setNearestDist(min);
+
+    // Fetch AI Advice when location or hotspots change significantly
+    const fetchAiAdvice = async () => {
+      setIsLoadingAi(true);
+      try {
+        const res = await fetch('/api/ai/pollution-advice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lat: userLocation.lat,
+            lng: userLocation.lng,
+            aqi,
+            nearestHotspotDist: min
+          })
+        });
+        const data = await res.json();
+        setAiAdvice(data);
+      } catch (err) {
+        console.error("AI Advice fetch error:", err);
+      } finally {
+        setIsLoadingAi(false);
+      }
+    };
+
+    fetchAiAdvice();
+  }, [userLocation, hotspots, aqi]);
 
   const getAdvisory = () => {
     if (nearestDist === null) return { title: 'Scanning...', text: 'Analyzing nearby hotspots for safety advice.', icon: Loader2, iconProps: { className: "animate-spin" }, color: 'bg-zinc-100 text-zinc-600' };
+    
+    if (aiAdvice) {
+      return {
+        title: aiAdvice.title,
+        text: aiAdvice.risk,
+        icon: nearestDist < 5 ? AlertTriangle : ShieldCheck,
+        iconProps: {},
+        color: nearestDist < 2 ? 'bg-red-50 text-red-700 border-red-100' : 
+               nearestDist < 5 ? 'bg-orange-50 text-orange-700 border-orange-100' : 
+               'bg-emerald-50 text-emerald-700 border-emerald-100'
+      };
+    }
+
     if (nearestDist < 2) return { 
       title: 'Critical Advisory', 
       text: 'High fire activity detected within 2km. Keep all windows closed. Use air purifiers if available. Avoid any outdoor physical activity.', 
@@ -329,7 +422,7 @@ const AdvisorySection = ({ userLocation, hotspots }: { userLocation: { lat: numb
       text: 'No immediate fire threats detected within 5km. Air quality is within normal seasonal ranges for your area.', 
       icon: CheckCircle2,
       iconProps: {},
-      color: 'bg-emerald-50 text-emerald-700 border-emerald-100' 
+      color: 'bg-secondary-light text-secondary border-secondary-light' 
     };
   };
 
@@ -337,20 +430,59 @@ const AdvisorySection = ({ userLocation, hotspots }: { userLocation: { lat: numb
   const Icon = advice.icon;
 
   return (
-    <div className={cn("p-6 rounded-3xl border space-y-4 shadow-sm", advice.color)}>
-      <div className="flex items-center gap-3">
-        <div className="p-2 bg-white/50 rounded-xl">
-          <Icon size={24} {...advice.iconProps} />
+    <div className="space-y-4">
+      <div className={cn("p-6 rounded-[32px] border space-y-4 shadow-sm transition-all duration-500", advice.color)}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-white/50 rounded-xl">
+              <Icon size={24} {...advice.iconProps} />
+            </div>
+            <h3 className="text-lg font-bold tracking-tight">{advice.title}</h3>
+          </div>
+          {isLoadingAi && <Loader2 size={16} className="animate-spin opacity-50" />}
         </div>
-        <h3 className="text-lg font-bold tracking-tight">{advice.title}</h3>
+        <div className="markdown-body text-sm leading-relaxed font-medium opacity-90">
+          <Markdown>{advice.text}</Markdown>
+        </div>
+        
+        {aiAdvice && aiAdvice.measures && (
+          <div className="pt-2 space-y-2">
+            <p className="text-[10px] font-bold uppercase tracking-widest opacity-60">Precautionary Measures:</p>
+            <div className="grid grid-cols-1 gap-2">
+              {aiAdvice.measures.map((m, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs font-medium bg-white/30 p-2 rounded-xl">
+                  <div className="mt-1 w-1 h-1 rounded-full bg-current shrink-0" />
+                  {m}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {nearestDist !== null && (
+          <div className="pt-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest opacity-60">
+            <Navigation size={10} />
+            Nearest Hotspot: {nearestDist.toFixed(1)} km away
+          </div>
+        )}
       </div>
-      <p className="text-sm leading-relaxed font-medium opacity-90">{advice.text}</p>
-      {nearestDist !== null && (
-        <div className="pt-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest opacity-60">
-          <Navigation size={10} />
-          Nearest Hotspot: {nearestDist.toFixed(1)} km away
-        </div>
-      )}
+    </div>
+  );
+};
+
+const Clock = () => {
+  const [time, setTime] = useState(new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  
+  return (
+    <div className="bg-white/90 backdrop-blur-md px-3 py-2 rounded-xl shadow-lg border border-white/20 flex flex-col pointer-events-auto">
+      <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-400">Current Time</span>
+      <span className="text-xs font-mono font-bold text-zinc-900">
+        {time.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })} {time.toLocaleTimeString()}
+      </span>
     </div>
   );
 };
@@ -385,48 +517,51 @@ const MapView = ({ incidents, onMapClick, timeframe, setTimeframe, role, hotspot
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
         />
         <HeatmapLayer incidents={incidents} role={role} />
-        {timeframe === 'live' && <HotspotLayer hotspots={hotspots} />}
+        <HotspotLayer hotspots={hotspots} />
         <MapEvents />
       </MapContainer>
 
       <div className="absolute top-6 left-6 right-6 flex flex-col gap-4 pointer-events-none z-[1000]">
-        <div className="bg-white/90 backdrop-blur-md p-4 rounded-2xl shadow-xl border border-white/20 pointer-events-auto max-w-xs space-y-3">
-          <div className="flex items-center gap-3">
-            <div className={cn(
-              "w-3 h-3 rounded-full animate-pulse",
-              timeframe === 'live' ? "bg-emerald-500" : "bg-blue-500"
-            )} />
-            <span className="text-xs font-bold uppercase tracking-widest text-zinc-500">
-              {timeframe === 'live' ? 'Live Heatmap: Delhi' : 'Historical: Previous Night'}
-            </span>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-4xl font-light tracking-tighter">{incidents.length}</span>
-            <span className="text-sm font-medium text-orange-500">Hotspots</span>
-          </div>
-          
-          {setTimeframe && (
-            <div className="flex bg-zinc-100 p-1 rounded-xl gap-1">
-              <button 
-                onClick={() => setTimeframe('live')}
-                className={cn(
-                  "flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all",
-                  timeframe === 'live' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-600"
-                )}
-              >
-                LIVE
-              </button>
-              <button 
-                onClick={() => setTimeframe('previous_night')}
-                className={cn(
-                  "flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all",
-                  timeframe === 'previous_night' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-600"
-                )}
-              >
-                PREV NIGHT
-              </button>
+        <div className="flex items-start justify-between w-full">
+          <Clock />
+          <div className="bg-white/90 backdrop-blur-md p-4 rounded-2xl shadow-xl border border-white/20 pointer-events-auto max-w-xs space-y-3">
+            <div className="flex items-center gap-3">
+              <div className={cn(
+                "w-3 h-3 rounded-full animate-pulse",
+                timeframe === 'live' ? "bg-emerald-500" : "bg-blue-500"
+              )} />
+              <span className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                {timeframe === 'live' ? 'Live Heatmap: Delhi' : 'Historical: Previous Night'}
+              </span>
             </div>
-          )}
+            <div className="flex items-baseline gap-2">
+              <span className="text-4xl font-light tracking-tighter">{incidents.length}</span>
+              <span className="text-sm font-medium text-orange-500">Hotspots</span>
+            </div>
+            
+            {setTimeframe && (
+              <div className="flex bg-zinc-100 p-1 rounded-xl gap-1">
+                <button 
+                  onClick={() => setTimeframe('live')}
+                  className={cn(
+                    "flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all",
+                    timeframe === 'live' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-600"
+                  )}
+                >
+                  LIVE
+                </button>
+                <button 
+                  onClick={() => setTimeframe('previous_night')}
+                  className={cn(
+                    "flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all",
+                    timeframe === 'previous_night' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-600"
+                  )}
+                >
+                  PREV NIGHT
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       
@@ -466,7 +601,7 @@ const ReportView = ({ onReport, initialCoords }: { onReport: (data: any) => void
       const model = "gemini-3-flash-preview";
       
       const prompt = `
-        You are the core vision engine for SaansSafe, an advanced fire and smoke detection system.
+        You are the core vision engine for SaansSafeAI, an advanced fire and smoke detection system.
         Your goal is to identify environmental hazards (fires, smoke, illegal burning) with extreme precision.
 
         ### DETECTION GUIDELINES:
@@ -560,7 +695,7 @@ const ReportView = ({ onReport, initialCoords }: { onReport: (data: any) => void
         <h2 className="text-3xl font-light tracking-tight">Report Incident</h2>
         <p className="text-zinc-500 text-sm">Help us identify open fires and garbage burning in your area.</p>
         {initialCoords && (
-          <div className="flex items-center gap-2 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full w-fit">
+          <div className="flex items-center gap-2 text-[10px] font-bold text-primary bg-primary-light px-3 py-1 rounded-full w-fit">
             <MapPin size={10} />
             LOCATION TAGGED: {initialCoords.lat.toFixed(4)}, {initialCoords.lng.toFixed(4)}
           </div>
@@ -573,7 +708,7 @@ const ReportView = ({ onReport, initialCoords }: { onReport: (data: any) => void
             {...getRootProps()} 
             className={cn(
               "aspect-square rounded-3xl border-2 border-dashed flex flex-col items-center justify-center transition-all cursor-pointer overflow-hidden",
-              preview ? "border-emerald-500 bg-emerald-50/50" : "border-zinc-200 hover:border-zinc-300 bg-zinc-50"
+              preview ? "border-primary bg-primary-light" : "border-zinc-200 hover:border-zinc-300 bg-zinc-50"
             )}
           >
             <input {...getInputProps()} />
@@ -592,7 +727,7 @@ const ReportView = ({ onReport, initialCoords }: { onReport: (data: any) => void
           <button
             disabled={!file || isVerifying}
             onClick={handleSubmit}
-            className="w-full py-4 bg-zinc-900 text-white rounded-2xl font-semibold shadow-xl shadow-zinc-200 disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
+            className="w-full py-4 bg-primary text-white rounded-2xl font-semibold shadow-xl shadow-primary/20 disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
           >
             {isVerifying ? (
               <>
@@ -612,21 +747,23 @@ const ReportView = ({ onReport, initialCoords }: { onReport: (data: any) => void
         >
           {result.detected ? (
             <>
-              <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto">
+              <div className="w-20 h-20 bg-secondary-light text-secondary rounded-full flex items-center justify-center mx-auto">
                 <CheckCircle2 size={40} />
               </div>
               <div className="space-y-2">
                 <h3 className="text-2xl font-semibold">Verified!</h3>
-                <p className="text-zinc-500">{result.description}</p>
+                <div className="markdown-body text-zinc-500">
+                  <Markdown>{result.description}</Markdown>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4 pt-4">
                 <div className="bg-zinc-50 p-4 rounded-2xl">
                   <span className="text-[10px] uppercase tracking-widest text-zinc-400 block mb-1">Intensity</span>
-                  <span className="font-bold text-orange-600 uppercase">{result.intensity}</span>
+                  <span className="font-bold text-accent uppercase">{result.intensity}</span>
                 </div>
                 <div className="bg-zinc-50 p-4 rounded-2xl">
                   <span className="text-[10px] uppercase tracking-widest text-zinc-400 block mb-1">Confidence</span>
-                  <span className="font-bold text-emerald-600">{Math.round(result.confidence * 100)}%</span>
+                  <span className="font-bold text-secondary">{Math.round(result.confidence * 100)}%</span>
                 </div>
               </div>
             </>
@@ -654,6 +791,140 @@ const ReportView = ({ onReport, initialCoords }: { onReport: (data: any) => void
           </button>
         </motion.div>
       )}
+    </div>
+  );
+};
+
+const ChatView = ({ userLocation, aqi }: { userLocation: { lat: number, lng: number } | null, aqi: number }) => {
+  const [messages, setMessages] = useState<{ role: 'user' | 'ai', content: string }[]>([
+    { role: 'ai', content: "Hello! I'm your SaansSafe AI assistant. How can I help you stay safe today?" }
+  ]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const suggestions = [
+    "What are the best masks for smoke?",
+    "How to protect my kids from poor AQI?",
+    "Is it safe to exercise outdoors today?",
+    "What should I do if I see a fire?",
+  ];
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  const handleSend = async (text: string) => {
+    if (!text.trim() || isLoading) return;
+    
+    const userMessage: { role: 'user' | 'ai', content: string } = { role: 'user', content: text };
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
+    setInput('');
+    setIsLoading(true);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+      const model = "gemini-3-flash-preview";
+      
+      const chat = ai.chats.create({
+        model,
+        config: {
+          systemInstruction: `You are SaansSafe AI, a health and safety assistant for residents of Delhi. 
+          Current User Location: ${userLocation ? `${userLocation.lat}, ${userLocation.lng}` : 'Unknown'}. 
+          Current AQI: ${aqi}.
+          Provide practical, empathetic, and scientifically accurate advice about air pollution, fire safety, and respiratory health. 
+          Format your response clearly using markdown:
+          - Use bullet points for lists.
+          - Use bold text for emphasis.
+          - Use headers for sections.
+          - Ensure proper spacing between paragraphs.
+          - Avoid long blocks of text; use short paragraphs and lists for readability.`
+        }
+      });
+
+      const response = await chat.sendMessage({ message: text });
+      const aiMessage: { role: 'user' | 'ai', content: string } = { role: 'ai', content: response.text || "I'm sorry, I couldn't process that." };
+      setMessages([...newMessages, aiMessage]);
+    } catch (err) {
+      console.error(err);
+      const errorMessage: { role: 'user' | 'ai', content: string } = { role: 'ai', content: "I'm having trouble connecting right now. Please try again later." };
+      setMessages([...newMessages, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto h-full flex flex-col p-4 md:p-8 space-y-4">
+      <div className="space-y-1">
+        <h2 className="text-3xl font-light tracking-tight">AI Safety Assistant</h2>
+        <p className="text-zinc-500 text-sm">Personalized advice based on your local air quality.</p>
+      </div>
+
+      <div 
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto space-y-4 p-4 bg-white rounded-[32px] border border-zinc-100 shadow-inner min-h-0"
+      >
+        {messages.map((m, i) => (
+          <div key={i} className={cn(
+            "flex",
+            m.role === 'user' ? "justify-end" : "justify-start"
+          )}>
+            <div className={cn(
+              "max-w-[80%] p-4 rounded-2xl text-sm leading-relaxed",
+              m.role === 'user' 
+                ? "bg-primary text-white rounded-tr-none" 
+                : "bg-zinc-100 text-zinc-800 rounded-tl-none"
+            )}>
+              <div className="markdown-body">
+                <Markdown>{m.content}</Markdown>
+              </div>
+            </div>
+          </div>
+        ))}
+        {isLoading && (
+          <div className="flex justify-start">
+            <div className="bg-zinc-100 p-4 rounded-2xl rounded-tl-none">
+              <Loader2 className="animate-spin text-zinc-400" size={20} />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {messages.length === 1 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {suggestions.map((s, i) => (
+            <button 
+              key={i}
+              onClick={() => handleSend(s)}
+              className="text-left p-3 text-xs font-medium bg-primary-light text-primary rounded-xl hover:bg-primary/10 transition-colors border border-primary/10"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <input 
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSend(input)}
+          placeholder="Ask about safety measures..."
+          className="flex-1 bg-white border border-zinc-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
+        />
+        <button 
+          onClick={() => handleSend(input)}
+          disabled={!input.trim() || isLoading}
+          className="p-3 bg-primary text-white rounded-2xl shadow-lg shadow-primary/20 disabled:opacity-50 transition-all active:scale-95"
+        >
+          <TrendingUp className="rotate-90" size={20} />
+        </button>
+      </div>
     </div>
   );
 };
@@ -707,7 +978,7 @@ const StatsView = () => {
                 <Tooltip 
                   contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                 />
-                <Area type="monotone" dataKey="fires" stroke="#f97316" fillOpacity={1} fill="url(#colorFires)" strokeWidth={3} />
+                <Area type="monotone" dataKey="fires" stroke="#f15a24" fillOpacity={1} fill="url(#colorFires)" strokeWidth={3} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -724,7 +995,7 @@ const StatsView = () => {
                 <Tooltip 
                   contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                 />
-                <Line type="monotone" dataKey="aqi" stroke="#10b981" strokeWidth={3} dot={{ r: 4, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }} />
+                <Line type="monotone" dataKey="aqi" stroke="#8cc63f" strokeWidth={3} dot={{ r: 4, fill: '#8cc63f', strokeWidth: 2, stroke: '#fff' }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -739,7 +1010,7 @@ const StatsView = () => {
               <div className="flex items-center justify-between">
                 <div className={cn(
                   "px-2 py-1 rounded text-[10px] font-bold uppercase",
-                  pred.probability > 0.7 ? "bg-red-100 text-red-600" : "bg-orange-100 text-orange-600"
+                  pred.probability > 0.7 ? "bg-red-100 text-red-600" : "bg-accent-light text-accent"
                 )}>
                   {pred.probability > 0.7 ? 'High Risk' : 'Moderate Risk'}
                 </div>
@@ -762,7 +1033,7 @@ const StatsView = () => {
             <p className="text-zinc-400 text-sm">Your reports helped reduce pollution by 12% this month.</p>
           </div>
           <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center">
-            <TrendingUp className="text-emerald-400" />
+            <TrendingUp className="text-secondary" />
           </div>
         </div>
         <div className="grid grid-cols-3 gap-4">
@@ -821,15 +1092,15 @@ const CalibrationView = () => {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-emerald-50 border border-emerald-100 p-6 rounded-3xl space-y-2">
-          <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">Model Accuracy</p>
+        <div className="bg-secondary-light border border-secondary-light p-6 rounded-3xl space-y-2">
+          <p className="text-[10px] font-bold text-secondary uppercase tracking-widest">Model Accuracy</p>
           <p className="text-4xl font-light">94.2%</p>
-          <p className="text-xs text-emerald-700">+1.2% from last calibration</p>
+          <p className="text-xs text-secondary-light">+1.2% from last calibration</p>
         </div>
-        <div className="bg-blue-50 border border-blue-100 p-6 rounded-3xl space-y-2">
-          <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Dataset Size</p>
+        <div className="bg-primary-light border border-primary-light p-6 rounded-3xl space-y-2">
+          <p className="text-[10px] font-bold text-primary uppercase tracking-widest">Dataset Size</p>
           <p className="text-4xl font-light">12.4k</p>
-          <p className="text-xs text-blue-700">Verified fire/smoke images</p>
+          <p className="text-xs text-primary">Verified fire/smoke images</p>
         </div>
         <div className="bg-zinc-50 border border-zinc-200 p-6 rounded-3xl space-y-2">
           <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Active Feedback</p>
@@ -869,7 +1140,7 @@ const CalibrationView = () => {
                     disabled={feedbackGiven.includes(`${det.id}-up`) || feedbackGiven.includes(`${det.id}-down`)}
                     className={cn(
                       "flex-1 py-2 rounded-xl border flex items-center justify-center gap-2 transition-all",
-                      feedbackGiven.includes(`${det.id}-up`) ? "bg-emerald-500 border-emerald-500 text-white" : "border-zinc-200 text-zinc-400 hover:border-emerald-500 hover:text-emerald-500"
+                      feedbackGiven.includes(`${det.id}-up`) ? "bg-secondary border-secondary text-white" : "border-zinc-200 text-zinc-400 hover:border-secondary hover:text-secondary"
                     )}
                   >
                     <ThumbsUp size={16} />
@@ -1069,6 +1340,28 @@ const CCTVMonitor = () => {
 const AdminView = ({ incidents, hotspots }: { incidents: any[], hotspots: any[] }) => {
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
+  const [view, setView] = useState<'surveillance' | 'data'>('surveillance');
+  const [dailyLogs, setDailyLogs] = useState<any[]>([]);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+
+  const fetchLogs = async () => {
+    setIsLoadingLogs(true);
+    try {
+      const res = await fetch('/api/logs/daily');
+      const data = await res.json();
+      setDailyLogs(data);
+    } catch (err) {
+      console.error('Error fetching logs:', err);
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (view === 'data') {
+      fetchLogs();
+    }
+  }, [view]);
 
   const startScan = async () => {
     setIsScanning(true);
@@ -1095,50 +1388,81 @@ const AdminView = ({ incidents, hotspots }: { incidents: any[], hotspots: any[] 
     <div className="p-6 space-y-8 pb-24 md:pb-6">
       <div className="flex items-center justify-between">
         <div className="space-y-1">
-          <h2 className="text-3xl font-light tracking-tight">Delhi CCTV Network</h2>
-          <p className="text-zinc-500 text-sm">Monitoring 1,200+ live camera feeds across the capital.</p>
+          <h2 className="text-3xl font-light tracking-tight">Authority Dashboard</h2>
+          <div className="flex bg-zinc-100 p-1 rounded-xl w-fit gap-1">
+            <button 
+              onClick={() => setView('surveillance')}
+              className={cn(
+                "px-4 py-1.5 text-xs font-bold rounded-lg transition-all",
+                view === 'surveillance' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-600"
+              )}
+            >
+              Surveillance
+            </button>
+            <button 
+              onClick={() => setView('data')}
+              className={cn(
+                "px-4 py-1.5 text-xs font-bold rounded-lg transition-all",
+                view === 'data' ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-400 hover:text-zinc-600"
+              )}
+            >
+              Data View
+            </button>
+          </div>
         </div>
         <div className="flex gap-3">
-          <button 
-            onClick={async () => {
-              try {
-                const res = await fetch('/api/simulate/nightly-cv', { method: 'POST' });
-                if (!res.ok) throw new Error('Failed to run nightly CV');
-                window.location.reload();
-              } catch (err) {
-                console.error(err);
-                alert('Failed to run nightly CV analysis');
-              }
-            }}
-            className="px-4 py-3 bg-blue-600 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg hover:bg-blue-700 transition-colors"
-          >
-            <Camera size={18} />
-            Run Nightly CV Analysis
-          </button>
-          <button 
-            onClick={async () => {
-              try {
-                const res = await fetch('/api/simulate/seed', { method: 'POST' });
-                if (!res.ok) throw new Error('Failed to seed data');
-                window.location.reload();
-              } catch (err) {
-                console.error(err);
-                alert('Failed to seed historical data');
-              }
-            }}
-            className="px-4 py-3 bg-zinc-900 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg"
-          >
-            <TrendingUp size={18} />
-            Seed Historical Data
-          </button>
-          <button 
-            onClick={startScan}
-            disabled={isScanning}
-            className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg shadow-emerald-100 disabled:opacity-50"
-          >
-            {isScanning ? <Loader2 className="animate-spin" size={18} /> : <Camera size={18} />}
-            {isScanning ? 'Scanning Feeds...' : 'Scan Network'}
-          </button>
+          {view === 'surveillance' ? (
+            <>
+              <button 
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/api/simulate/nightly-cv', { method: 'POST' });
+                    if (!res.ok) throw new Error('Failed to run nightly CV');
+                    window.location.reload();
+                  } catch (err) {
+                    console.error(err);
+                    alert('Failed to run nightly CV analysis');
+                  }
+                }}
+                className="px-4 py-3 bg-blue-600 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg hover:bg-blue-700 transition-colors"
+              >
+                <Camera size={18} />
+                Run Nightly CV Analysis
+              </button>
+              <button 
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/api/simulate/seed', { method: 'POST' });
+                    if (!res.ok) throw new Error('Failed to seed data');
+                    window.location.reload();
+                  } catch (err) {
+                    console.error(err);
+                    alert('Failed to seed historical data');
+                  }
+                }}
+                className="px-4 py-3 bg-zinc-900 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg"
+              >
+                <TrendingUp size={18} />
+                Seed Historical Data
+              </button>
+              <button 
+                onClick={startScan}
+                disabled={isScanning}
+                className="px-6 py-3 bg-secondary text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg shadow-secondary-light disabled:opacity-50"
+              >
+                {isScanning ? <Loader2 className="animate-spin" size={18} /> : <Camera size={18} />}
+                {isScanning ? 'Scanning Feeds...' : 'Scan Network'}
+              </button>
+            </>
+          ) : (
+            <button 
+              onClick={fetchLogs}
+              className="px-4 py-3 bg-zinc-900 text-white rounded-2xl font-bold text-sm flex items-center gap-2 shadow-lg"
+            >
+              <Activity size={18} />
+              Refresh Logs
+            </button>
+          )}
           <button className="p-3 bg-zinc-100 rounded-2xl relative">
             <Bell size={24} className="text-zinc-600" />
             <span className="absolute top-2 right-2 w-2 h-2 bg-orange-500 rounded-full border-2 border-white" />
@@ -1146,10 +1470,12 @@ const AdminView = ({ incidents, hotspots }: { incidents: any[], hotspots: any[] 
         </div>
       </div>
 
-      {isScanning && (
+      {view === 'surveillance' ? (
+        <>
+          {isScanning && (
         <div className="w-full h-2 bg-zinc-100 rounded-full overflow-hidden">
           <motion.div 
-            className="h-full bg-emerald-500"
+            className="h-full bg-secondary"
             initial={{ width: 0 }}
             animate={{ width: `${scanProgress}%` }}
           />
@@ -1208,11 +1534,11 @@ const AdminView = ({ incidents, hotspots }: { incidents: any[], hotspots: any[] 
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs text-zinc-400">AI Model Status</span>
-                <span className="text-xs text-emerald-400 font-bold">OPTIMAL</span>
+                <span className="text-xs text-secondary font-bold">OPTIMAL</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-xs text-zinc-400">Camera Uptime</span>
-                <span className="text-xs text-emerald-400 font-bold">98.4%</span>
+                <span className="text-xs text-secondary font-bold">98.4%</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-xs text-zinc-400">Processing Latency</span>
@@ -1228,7 +1554,7 @@ const AdminView = ({ incidents, hotspots }: { incidents: any[], hotspots: any[] 
                 Feed external CCTV or sensor data into the SAANSSAFE AI pipeline using our REST API.
               </p>
               <div className="bg-zinc-900 p-4 rounded-2xl overflow-x-auto">
-                <code className="text-[10px] text-emerald-400 font-mono whitespace-pre">
+                <code className="text-[10px] text-secondary font-mono whitespace-pre">
 {`# Report a verified fire incident
 curl -X POST ${window.location.origin}/api/simulate/camera \\
   -H "Content-Type: application/json" \\
@@ -1295,8 +1621,86 @@ curl -X POST ${window.location.origin}/api/simulate/camera \\
           </div>
         </div>
       </div>
+    </>
+  ) : (
+    <div className="bg-white rounded-3xl border border-zinc-100 shadow-sm overflow-hidden">
+      <div className="p-6 border-b border-zinc-100 flex items-center justify-between bg-zinc-50/50">
+        <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Daily Fire Logs</h3>
+        <div className="text-[10px] text-zinc-400 font-mono">
+          Total Records: {dailyLogs.length}
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-zinc-50 border-b border-zinc-100">
+              <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-zinc-500">Date/Time</th>
+              <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-zinc-500">Location</th>
+              <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-zinc-500">Source</th>
+              <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-zinc-500">Intensity</th>
+              <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-zinc-500">Evidence</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100">
+            {isLoadingLogs ? (
+              <tr>
+                <td colSpan={5} className="px-6 py-12 text-center text-zinc-400 italic">Loading logs...</td>
+              </tr>
+            ) : dailyLogs.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-6 py-12 text-center text-zinc-400 italic">No logs found.</td>
+              </tr>
+            ) : (
+              dailyLogs.map((log) => (
+                <tr key={log.id} className="hover:bg-zinc-50/50 transition-colors">
+                  <td className="px-6 py-4">
+                    <div className="text-xs font-bold text-zinc-900">{log.date}</div>
+                    <div className="text-[10px] text-zinc-400 font-mono">{log.time}</div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="text-xs font-medium text-zinc-700">{log.place_name}</div>
+                    <div className="text-[10px] text-zinc-400 font-mono">{log.lat.toFixed(4)}, {log.lng.toFixed(4)}</div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className={cn(
+                      "inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase",
+                      log.source === 'camera' ? "bg-blue-100 text-blue-600" : "bg-purple-100 text-purple-600"
+                    )}>
+                      {log.source}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className={cn(
+                      "text-xs font-bold",
+                      log.intensity === 'high' ? "text-red-600" : "text-orange-600"
+                    )}>
+                      {log.intensity.toUpperCase()}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    {log.image_url && log.image_url !== 'uploaded_image' ? (
+                      <a 
+                        href={log.image_url} 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="text-[10px] font-bold text-blue-600 hover:underline flex items-center gap-1"
+                      >
+                        VIEW IMAGE <ChevronRight size={10} />
+                      </a>
+                    ) : (
+                      <span className="text-[10px] text-zinc-300 italic">No Image</span>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
-  );
+  )}
+</div>
+);
 };
 
 export default function App() {
@@ -1305,7 +1709,9 @@ export default function App() {
   const [incidents, setIncidents] = useState<any[]>([]);
   const [hotspots, setHotspots] = useState<any[]>([]);
   const [timeframe, setTimeframe] = useState<'live' | 'previous_night'>('live');
+  const [aqi, setAqi] = useState(145);
   const [selectedCoords, setSelectedCoords] = useState<{ lat: number, lng: number } | null>(null);
+  const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set());
   const [userLocation, setUserLocation] = useState<{ lat: number, lng: number } | null>(() => {
     const saved = localStorage.getItem('user_location');
     return saved ? JSON.parse(saved) : null;
@@ -1366,7 +1772,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 font-sans selection:bg-emerald-100 selection:text-emerald-900">
+    <div className="min-h-screen bg-zinc-50 text-zinc-900 font-sans selection:bg-primary-light selection:text-primary">
       <Navbar activeTab={activeTab} setActiveTab={setActiveTab} role={role} />
       
       <main className="md:ml-20 h-screen overflow-y-auto">
@@ -1393,8 +1799,8 @@ export default function App() {
                 </div>
                 {role === 'citizen' && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-24 md:pb-0">
-                    <AQIFeed userLocation={userLocation} hotspots={hotspots} />
-                    <AdvisorySection userLocation={userLocation} hotspots={hotspots} />
+                    <AQIFeed userLocation={userLocation} hotspots={hotspots} onAqiChange={setAqi} />
+                    <AdvisorySection userLocation={userLocation} hotspots={hotspots} aqi={aqi} />
                   </div>
                 )}
               </div>
@@ -1410,6 +1816,9 @@ export default function App() {
               />
             )}
             {activeTab === 'stats' && <StatsView />}
+            {activeTab === 'chat' && role === 'citizen' && (
+              <ChatView userLocation={userLocation} aqi={aqi} />
+            )}
             {activeTab === 'admin' && <AdminView incidents={incidents} hotspots={hotspots} />}
             {activeTab === 'calibrate' && role === 'authority' && (
               <CalibrationView />
@@ -1429,7 +1838,7 @@ export default function App() {
                 <div className="bg-white p-6 rounded-3xl border border-zinc-100 shadow-sm space-y-6">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium text-zinc-500">Your Impact Points</span>
-                    <span className="text-2xl font-bold text-emerald-600">1,450</span>
+                    <span className="text-2xl font-bold text-primary">1,450</span>
                   </div>
                   <div className="space-y-2">
                     <div className="flex justify-between text-xs">
@@ -1437,7 +1846,7 @@ export default function App() {
                       <span>85%</span>
                     </div>
                     <div className="h-2 bg-zinc-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-emerald-500 w-[85%]" />
+                      <div className="h-full bg-primary w-[85%]" />
                     </div>
                   </div>
                 </div>
@@ -1464,7 +1873,7 @@ export default function App() {
 
       {/* Global Alert Overlay */}
       <AnimatePresence>
-        {incidents.length > 0 && activeTab !== 'admin' && (
+        {incidents.length > 0 && activeTab !== 'admin' && !dismissedAlerts.has(incidents[0].id) && (
           <motion.div 
             initial={{ opacity: 0, x: 100 }}
             animate={{ opacity: 1, x: 0 }}
@@ -1478,7 +1887,7 @@ export default function App() {
                 <p className="text-sm font-medium">New fire detected within 2km of your location.</p>
               </div>
               <button 
-                onClick={() => setIncidents(prev => prev.slice(1))}
+                onClick={() => setDismissedAlerts(prev => new Set(prev).add(incidents[0].id))}
                 className="text-white/60 hover:text-white"
               >
                 <X size={16} />

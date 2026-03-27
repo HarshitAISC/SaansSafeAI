@@ -1,5 +1,5 @@
 {
-  "name": "SaanSafeAI",
-  "description": "",
-  "requestFramePermissions": []
+  "name": "SaansSafeAI",
+  "description": "AI-powered fire detection and air quality monitoring system for a safer environment.",
+  "requestFramePermissions": ["camera"]
 }

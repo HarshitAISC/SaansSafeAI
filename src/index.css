@@ -4,13 +4,67 @@
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-primary: #0066cc;
+  --color-secondary: #8cc63f;
+  --color-accent: #f15a24;
+  --color-primary-light: #e6f0fa;
+  --color-secondary-light: #f4f9ec;
+  --color-accent-light: #fef2ee;
 }
 
 body {
   @apply antialiased;
 }
 
-.selection\:bg-emerald-100 *::selection {
-  background-color: #d1fae5;
-  color: #064e3b;
+.logo-gradient {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 50%, var(--color-accent) 100%);
+}
+
+.markdown-body {
+  @apply space-y-2;
+}
+
+.markdown-body p {
+  @apply mb-2 last:mb-0;
+}
+
+.markdown-body ul, .markdown-body ol {
+  @apply pl-4 mb-2;
+}
+
+.markdown-body ul {
+  @apply list-disc;
+}
+
+.markdown-body ol {
+  @apply list-decimal;
+}
+
+.markdown-body li {
+  @apply mb-1;
+}
+
+.markdown-body strong {
+  @apply font-bold;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  @apply font-bold mt-4 mb-2;
+}
+
+.markdown-body h1 { @apply text-lg; }
+.markdown-body h2 { @apply text-base; }
+.markdown-body h3 { @apply text-sm; }
+
+/* Chat specific overrides for markdown */
+.bg-primary .markdown-body {
+  @apply text-white;
+}
+
+.bg-primary .markdown-body strong {
+  @apply text-white;
+}
+
+.bg-zinc-100 .markdown-body {
+  @apply text-zinc-800;
 }
